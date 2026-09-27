@@ -17,6 +17,7 @@ export const ExportButton: React.FC = () => {
   const [exporting, setExporting] = useState(false)
   const [progress, setProgress] = useState(0)
   const [includeAudit, setIncludeAudit] = useState(false)
+  const [platform, setPlatform] = useState<AccountingPlatform>('generic')
   const [showOptions, setShowOptions] = useState(false)
   const [showScheduleDialog, setShowScheduleDialog] = useState(false)
   const [exportAnnouncement, setExportAnnouncement] = useState('')
@@ -177,42 +178,34 @@ export const ExportButton: React.FC = () => {
               <input
                 type="checkbox"
                 checked={includeAudit}
-                onChange={(event) => setIncludeAudit(event.target.checked)}
+                onChange={(e) => setIncludeAudit(e.target.checked)}
               />
               <span>Include Audit Trail</span>
             </label>
+          )}
 
-            <div className="option-info">
-              <p>
-                <strong>{transactions.length}</strong> transaction
-                {transactions.length !== 1 ? 's' : ''} will be exported
+          <div className="option-info">
+            <p>
+              <strong>{transactions.length}</strong> transaction
+              {transactions.length !== 1 ? 's' : ''} will be exported
+            </p>
+            {platform !== 'generic' && (
+              <p className="format-help">
+                Formatted for import into {platform === 'quickbooks' ? 'QuickBooks Online' : 'Xero'}.
+              </p>
+            )}
+            {transactions.length > 10000 && (
+              <p className="warning">
+                Progress will be shown for large exports
               </p>
               {transactions.length > 10000 && (
                 <p className="warning">Progress will be shown for large exports</p>
               )}
             </div>
 
-            <button className="action-button primary" onClick={handleExport}>
-              Download CSV
-            </button>
-            <button
-              className="action-button secondary schedule-action"
-              onClick={() => {
-                setShowOptions(false)
-                setShowScheduleDialog(true)
-              }}
-            >
-              <CalendarPlus size={15} /> Schedule Export
-            </button>
-            <button
-              className="action-button secondary"
-              onClick={() => setShowOptions(false)}
-            >
-              Cancel
-            </button>
-          </div>
-        )}
-      </div>
+          <button className="action-button primary" onClick={handleExport}>
+            Download {platform === 'generic' ? 'CSV' : 'import file'}
+          </button>
 
       <ExportScheduleDialog
         isOpen={showScheduleDialog}
