@@ -5,13 +5,8 @@ import { TransactionsTable } from './components/TransactionsTable'
 import { TransactionDrawer } from './components/TransactionDrawer'
 import { ExportButton } from './components/ExportButton'
 import { NotificationSettings } from './components/NotificationSettings'
-import { FeatureFlagSettings } from './components/FeatureFlagSettings'
-import { PerformanceDashboard } from './components/PerformanceDashboard'
-import { DuplicateReview } from './components/DuplicateReview'
-import { ToastNotifications } from './components/ToastNotifications'
-import { Transaction } from './services/api'
-import { recordPerformanceMetric, startPerformanceMonitoring } from './services/performance'
-import { TransactionMergeResult } from './services/duplicateDetection'
+import { NotificationCenter } from './components/NotificationCenter'
+import { canAccess } from './auth/access'
 import './App.css'
 
 type Page = 'transactions' | 'reconciliation' | 'settings'
@@ -28,11 +23,8 @@ export default function App() {
     transactions,
   } = useTransactionStore()
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const handleSessionExpired = () => {
-    window.location.reload()
-  }
-  const { showWarning, secondsRemaining, extendSession, signOut } =
-    useSessionExpiration(handleSessionExpired)
+  const [fullPageTransaction, setFullPageTransaction] = useState(false)
+  const canManageNotifications = canAccess('notification-settings')
 
   // Initialize transactions on mount
   useEffect(() => {
@@ -41,12 +33,14 @@ export default function App() {
 
   const handleRowClick = (tx: Transaction) => {
     setSelectedTransaction(tx)
+    setFullPageTransaction(false)
     setDrawerOpen(true)
     void fetchTransactionDetail(tx.id)
   }
 
   const handleDrawerClose = () => {
     setDrawerOpen(false)
+    setFullPageTransaction(false)
     setTimeout(() => setSelectedTransaction(null), 300) // Delay to allow animation
   }
 
@@ -64,6 +58,7 @@ export default function App() {
       <header className="app-header">
         <div className="header-content">
           <h1 className="app-title">ProxyPay Dashboard</h1>
+          <NotificationCenter />
           <nav className="nav-tabs">
             <button
               className={`nav-tab ${currentPage === 'transactions' ? 'active' : ''}`}
@@ -71,30 +66,14 @@ export default function App() {
             >
               Transactions
             </button>
-            <button
-              className={`nav-tab ${currentPage === 'reconciliation' ? 'active' : ''}`}
-              onClick={() => setCurrentPage('reconciliation')}
-            >
-              Reconciliation
-            </button>
-            <button
-              className={`nav-tab ${currentPage === 'settings' ? 'active' : ''}`}
-              onClick={() => setCurrentPage('settings')}
-            >
-              Notification Settings
-            </button>
-            <button
-              className={`nav-tab ${currentPage === 'features' ? 'active' : ''}`}
-              onClick={() => setCurrentPage('features')}
-            >
-              Feature Flags
-            </button>
-            <button
-              className={`nav-tab ${currentPage === 'performance' ? 'active' : ''}`}
-              onClick={() => setCurrentPage('performance')}
-            >
-              Performance
-            </button>
+            {canManageNotifications && (
+              <button
+                className={`nav-tab ${currentPage === 'settings' ? 'active' : ''}`}
+                onClick={() => setCurrentPage('settings')}
+              >
+                Notification Settings
+              </button>
+            )}
           </nav>
         </div>
       </header>
@@ -118,11 +97,11 @@ export default function App() {
           <div className="reconciliation-page">
             <ReconciliationTab />
           </div>
-        ) : (
+        ) : canManageNotifications ? (
           <div className="settings-page">
             <NotificationSettings />
           </div>
-        )}
+        ) : null}
       </main>
 
       {/* Transaction Detail Drawer */}
@@ -132,7 +111,8 @@ export default function App() {
         loading={detailLoading}
         error={detailError}
         onClose={handleDrawerClose}
-        loading={detailLoading}
+        fullPage={fullPageTransaction}
+        onOpenFullPage={() => setFullPageTransaction(true)}
       />
       {showWarning && (
         <SessionExpirationDialog

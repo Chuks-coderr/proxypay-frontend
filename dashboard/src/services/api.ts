@@ -151,23 +151,19 @@ export interface NotificationConfig {
   settings: NotificationSettings[]
 }
 
-export interface WebhookTestPayload {
+export interface ScheduledExport {
   id: string
-  eventType: string
-  createdAt: string
-  data: {
-    test: boolean
-    message: string
-  }
+  scheduledFor: string
+  status: 'scheduled' | 'processing' | 'ready' | 'failed'
 }
 
-export interface WebhookTestResult {
-  status: number
-  body: unknown
-  payload: WebhookTestPayload
-  requestStartedAt: string
-  responseReceivedAt: string
-  attempts: number
+export interface DashboardNotification {
+  id: string
+  title: string
+  message: string
+  createdAt: string
+  read: boolean
+  actionUrl?: string
 }
 
 class ProxyPayAPI {
@@ -353,41 +349,22 @@ class ProxyPayAPI {
     return data
   }
 
-  async testWebhook(eventType: string, retries = 2): Promise<WebhookTestResult> {
-    const payload: WebhookTestPayload = {
-      id: `webhook-test-${Date.now()}`,
-      eventType,
-      createdAt: new Date().toISOString(),
-      data: {
-        test: true,
-        message: 'This is a test webhook from ProxyPay.',
-      },
-    }
-    const requestStartedAt = new Date().toISOString()
-    let attempts = 0
+  async scheduleExport(options: {
+    includeAuditTrail: boolean
+    scheduledFor: string
+    filters?: TransactionFilters
+  }): Promise<ScheduledExport> {
+    const { data } = await this.client.post('/exports', options)
+    return data
+  }
 
-    while (attempts <= retries) {
-      attempts += 1
-      try {
-        const response = await this.client.post('/notifications/webhook/test', payload)
-        return {
-          status: response.status,
-          body: response.data,
-          payload,
-          requestStartedAt,
-          responseReceivedAt: new Date().toISOString(),
-          attempts,
-        }
-      } catch (error) {
-        const shouldRetry =
-          attempts <= retries &&
-          axios.isAxiosError(error) &&
-          (!error.response || error.response.status >= 500)
-        if (!shouldRetry) throw error
-      }
-    }
+  async getNotifications(): Promise<DashboardNotification[]> {
+    const { data } = await this.client.get('/notifications')
+    return data.notifications ?? data
+  }
 
-    throw new Error('Webhook test failed after all retry attempts')
+  async markNotificationRead(id: string): Promise<void> {
+    await this.client.patch(`/notifications/${encodeURIComponent(id)}`, { read: true })
   }
 
   // Health check

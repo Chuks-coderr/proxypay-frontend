@@ -1,11 +1,11 @@
 import React, { useState } from 'react'
-import { Download, FileText, Loader } from 'lucide-react'
+import { CalendarClock, Download, Loader } from 'lucide-react'
 import { useTransactionStore } from '../stores/transactionStore'
-import { useExportScheduleStore } from '../stores/exportScheduleStore'
-import { useToastStore } from '../stores/toastStore'
+import { proxyPayAPI } from '../services/api'
 import { CSVExporter } from '../services/csv'
 import { printTransactionReport } from '../services/print'
 import '../styles/ExportButton.css'
+import { canAccess } from '../auth/access'
 
 export const ExportButton: React.FC = () => {
   const { transactions, filters } = useTransactionStore()
@@ -18,30 +18,12 @@ export const ExportButton: React.FC = () => {
   const [includeAudit, setIncludeAudit] = useState(false)
   const [platform, setPlatform] = useState<AccountingPlatform>('generic')
   const [showOptions, setShowOptions] = useState(false)
-  const [showScheduleDialog, setShowScheduleDialog] = useState(false)
-  const [exportAnnouncement, setExportAnnouncement] = useState('')
+  const [scheduledFor, setScheduledFor] = useState('')
+  const [scheduling, setScheduling] = useState(false)
 
-  useEffect(() => {
-    const handleCompletion = (event: Event) => {
-      const detail = (event as CustomEvent<{
-        scheduleId?: string
-        message?: string
-        url?: string
-      }>).detail
-      const message = detail?.message || 'Your scheduled transaction export is ready.'
-      setExportAnnouncement(message)
-      setCompletionNotification({
-        scheduleId: detail?.scheduleId || 'scheduled-export',
-        message,
-        receivedAt: new Date().toISOString(),
-      })
-      if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification('ProxyPay export complete', { body: message })
-      }
-    }
-    window.addEventListener('proxypay:export-completed', handleCompletion)
-    return () => window.removeEventListener('proxypay:export-completed', handleCompletion)
-  }, [setCompletionNotification])
+  if (!canAccess('transaction-export')) {
+    return null
+  }
 
   const handleExport = async () => {
     if (transactions.length === 0) {
@@ -90,13 +72,27 @@ export const ExportButton: React.FC = () => {
     }
   }
 
-  const handleReport = () => {
+  const handleSchedule = async () => {
+    if (!scheduledFor) {
+      alert('Choose when the export should be ready')
+      return
+    }
+
+    setScheduling(true)
     try {
-      printTransactionReport(transactions)
+      await proxyPayAPI.scheduleExport({
+        includeAuditTrail: includeAudit,
+        scheduledFor: new Date(scheduledFor).toISOString(),
+        filters: useTransactionStore.getState().filters,
+      })
+      alert('Export scheduled. You will be notified when it is ready.')
+      setScheduledFor('')
       setShowOptions(false)
     } catch (error) {
-      console.error('Report generation failed:', error)
-      alert(error instanceof Error ? error.message : 'Failed to generate report')
+      console.error('Scheduling export failed:', error)
+      alert('Failed to schedule export')
+    } finally {
+      setScheduling(false)
     }
   }
 
@@ -219,6 +215,25 @@ export const ExportButton: React.FC = () => {
           <button className="action-button report" onClick={handleReport}>
             <FileText size={16} />
             Print / Save PDF Report
+          </button>
+
+          <label className="schedule-field">
+            <span>Notify me when ready</span>
+            <input
+              type="datetime-local"
+              value={scheduledFor}
+              min={new Date().toISOString().slice(0, 16)}
+              onChange={(event) => setScheduledFor(event.target.value)}
+              disabled={scheduling}
+            />
+          </label>
+          <button
+            className="action-button schedule"
+            onClick={handleSchedule}
+            disabled={scheduling || !scheduledFor}
+          >
+            <CalendarClock size={16} />
+            {scheduling ? 'Scheduling...' : 'Schedule Export'}
           </button>
 
           <button

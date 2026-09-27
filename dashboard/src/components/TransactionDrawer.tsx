@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react'
 import { format } from 'date-fns'
-import { Printer, X } from 'lucide-react'
+import { ExternalLink, Printer, X } from 'lucide-react'
 import { Transaction } from '../services/api'
 import { printTransactionReceipt } from '../services/print'
 import '../styles/TransactionDrawer.css'
@@ -11,7 +11,8 @@ interface TransactionDrawerProps {
   loading: boolean
   error: string | null
   onClose: () => void
-  loading?: boolean
+  fullPage?: boolean
+  onOpenFullPage?: () => void
 }
 
 export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
@@ -20,7 +21,8 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
   loading,
   error,
   onClose,
-  loading = false,
+  fullPage = false,
+  onOpenFullPage,
 }) => {
   const handlePrint = () => {
     if (window.confirm('Open the print dialog for this transaction?')) {
@@ -54,27 +56,32 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
   return (
     <>
       {/* Overlay */}
-      {isOpen && (
+      {isOpen && !fullPage && (
         <div className="drawer-overlay" onClick={onClose} aria-hidden="true" />
       )}
 
       {/* Drawer */}
-      <div
-        className={`transaction-drawer ${isOpen ? 'open' : ''}`}
-        role="dialog"
-        aria-modal={isOpen}
-        aria-labelledby="transaction-drawer-heading"
-        aria-busy={loading}
-      >
+      <div className={`transaction-drawer ${isOpen ? 'open' : ''} ${fullPage ? 'full-page' : ''}`}>
         {/* Header */}
         <div className="drawer-header">
           <h2>Transaction Details</h2>
           <div className="drawer-actions">
-            <button className="print-button" onClick={handlePrintReceipt}>
-              <Printer size={16} />
-              Print Receipt
-            </button>
-            <button className="close-button" onClick={onClose} aria-label="Close drawer">
+            {!fullPage && onOpenFullPage && (
+              <button
+                className="close-button"
+                onClick={onOpenFullPage}
+                aria-label="Open full-page transaction view"
+                title="Open full-page view"
+              >
+                <ExternalLink size={20} />
+              </button>
+            )}
+            {fullPage && (
+              <button className="close-button" onClick={() => window.print()} aria-label="Print transaction">
+                <Printer size={20} />
+              </button>
+            )}
+            <button className="close-button" onClick={onClose} aria-label="Close transaction">
               <X size={24} />
             </button>
           </div>

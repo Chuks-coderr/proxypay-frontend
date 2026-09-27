@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import { NotificationSettings, proxyPayAPI } from '../services/api'
+import {
+  DashboardNotification,
+  NotificationSettings,
+  proxyPayAPI,
+} from '../services/api'
 
 export interface NotificationChange {
   eventType: string
@@ -12,8 +16,8 @@ interface NotificationStore {
   loading: boolean
   error: string | null
   optimisticUpdates: Map<string, NotificationSettings>
-  pastChanges: NotificationChange[]
-  futureChanges: NotificationChange[]
+  notifications: DashboardNotification[]
+  notificationsLoading: boolean
 
   // Actions
   fetchSettings: () => Promise<void>
@@ -25,6 +29,8 @@ interface NotificationStore {
   undo: () => Promise<void>
   redo: () => Promise<void>
   clearError: () => void
+  fetchNotifications: () => Promise<void>
+  markNotificationRead: (id: string) => Promise<void>
 }
 
 const MAX_HISTORY_SIZE = 20
@@ -34,8 +40,8 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   loading: false,
   error: null,
   optimisticUpdates: new Map(),
-  pastChanges: [],
-  futureChanges: [],
+  notifications: [],
+  notificationsLoading: false,
 
   fetchSettings: async () => {
     set({ loading: true, error: null })
@@ -123,56 +129,32 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     }
   },
 
-  undo: async () => {
-    const { pastChanges } = get()
-    const change = pastChanges[pastChanges.length - 1]
-    if (!change) return
-
+  fetchNotifications: async () => {
+    set({ notificationsLoading: true })
     try {
-      const restored = await proxyPayAPI.updateNotificationSetting(
-        change.eventType,
-        change.previous.emailEnabled,
-        change.previous.webhookEnabled
-      )
-      set((state) => ({
-        settings: state.settings.map((setting) =>
-          setting.eventType === change.eventType ? restored : setting
-        ),
-        pastChanges: state.pastChanges.slice(0, -1),
-        futureChanges: [...state.futureChanges, { ...change, next: restored }],
-        error: null,
-      }))
+      const notifications = await proxyPayAPI.getNotifications()
+      set({ notifications, notificationsLoading: false })
     } catch (error) {
       set({
-        error: error instanceof Error ? error.message : 'Failed to undo setting change',
+        notificationsLoading: false,
+        error:
+          error instanceof Error ? error.message : 'Failed to fetch notifications',
       })
     }
   },
 
-  redo: async () => {
-    const { futureChanges } = get()
-    const change = futureChanges[futureChanges.length - 1]
-    if (!change) return
-
+  markNotificationRead: async (id: string) => {
     try {
-      const reapplied = await proxyPayAPI.updateNotificationSetting(
-        change.eventType,
-        change.next.emailEnabled,
-        change.next.webhookEnabled
-      )
+      await proxyPayAPI.markNotificationRead(id)
       set((state) => ({
-        settings: state.settings.map((setting) =>
-          setting.eventType === change.eventType ? reapplied : setting
+        notifications: state.notifications.map((notification) =>
+          notification.id === id ? { ...notification, read: true } : notification
         ),
-        pastChanges: [...state.pastChanges, { ...change, next: reapplied }].slice(
-          -MAX_HISTORY_SIZE
-        ),
-        futureChanges: state.futureChanges.slice(0, -1),
-        error: null,
       }))
     } catch (error) {
       set({
-        error: error instanceof Error ? error.message : 'Failed to redo setting change',
+        error:
+          error instanceof Error ? error.message : 'Failed to update notification',
       })
     }
   },
