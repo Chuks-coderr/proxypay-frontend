@@ -12,6 +12,10 @@
     "test:flags": "ts-node --transpile-only src/featureFlags/__tests__/feature-flags.test.ts",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
+    "test:lighthouse": "node scripts/lighthouse-audit.js",
+    "test:accessibility": "node scripts/accessibility-audit.js",
+    "test:visual": "npx percy exec -- npm run test:visual:snapshot",
+    "test:visual:snapshot": "npx playwright test tests/visual-snapshot.spec.ts",
     "load-test": "ts-node src/load-test.ts",
     "load-test:smoke": "ts-node src/load-test.ts --profile smoke-test",
     "load-test:normal": "ts-node src/load-test.ts --profile normal-load",
@@ -26,7 +30,8 @@
     "load-test:scenario:rampup": "ts-node src/load-test.ts --scenarios ramp-up-analysis",
     "load-test:list": "ts-node src/load-test.ts --list-profiles",
     "test:history": "ts-node src/hooks/__tests__/useRequestHistory.test.ts",
-    "test:component": "ts-node src/components/__tests__/RequestHistory.test.ts"
+    "test:component": "ts-node src/components/__tests__/RequestHistory.test.ts",
+    "audit:dependencies": "npm audit --audit-level=moderate"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
@@ -43,6 +48,7 @@
     "@playwright/test": "^1.63.0",
     "jest": "^30.4.2",
     "jest-environment-jsdom": "^30.4.1",
+    "lighthouse": "^11.4.0",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.9.0",
     "typescript": "^5.0.0"

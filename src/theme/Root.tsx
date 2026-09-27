@@ -1,5 +1,6 @@
 import React, { ReactNode } from 'react';
 import styles from './Root.module.css';
+import EnvValidationError from '../components/EnvValidationError';
 
 interface BoundaryState {
   error: Error | null;
@@ -49,5 +50,9 @@ class ErrorBoundary extends React.Component<{ children: ReactNode }, BoundarySta
 }
 
 export default function Root({ children }: { children: ReactNode }): React.JSX.Element {
-  return <ErrorBoundary>{children}</ErrorBoundary>;
+  return (
+    <EnvValidationError>
+      <ErrorBoundary>{children}</ErrorBoundary>
+    </EnvValidationError>
+  );
 }
