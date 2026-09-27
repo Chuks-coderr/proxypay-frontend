@@ -14,7 +14,7 @@ import { recordPerformanceMetric, startPerformanceMonitoring } from './services/
 import { TransactionMergeResult } from './services/duplicateDetection'
 import './App.css'
 
-type Page = 'transactions' | 'settings' | 'features' | 'performance'
+type Page = 'transactions' | 'reconciliation' | 'settings'
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('transactions')
@@ -72,6 +72,12 @@ export default function App() {
               Transactions
             </button>
             <button
+              className={`nav-tab ${currentPage === 'reconciliation' ? 'active' : ''}`}
+              onClick={() => setCurrentPage('reconciliation')}
+            >
+              Reconciliation
+            </button>
+            <button
               className={`nav-tab ${currentPage === 'settings' ? 'active' : ''}`}
               onClick={() => setCurrentPage('settings')}
             >
@@ -105,14 +111,18 @@ export default function App() {
               <TransactionsTable onRowClick={handleRowClick} loadOnMount={false} />
               <DuplicateReview transactions={transactions} onMerged={handleMerged} />
             </div>
-          ) : currentPage === 'settings' ? (
-            <div className="settings-page"><NotificationSettings /></div>
-          ) : currentPage === 'features' ? (
-            <div className="settings-page"><FeatureFlagSettings /></div>
-          ) : (
-            <div className="settings-page"><PerformanceDashboard /></div>
-          )}
-        </Profiler>
+            <TransactionsTable onRowClick={handleRowClick} loadOnMount={false} />
+            <DuplicateReview transactions={transactions} onMerged={handleMerged} />
+          </div>
+        ) : currentPage === 'reconciliation' ? (
+          <div className="reconciliation-page">
+            <ReconciliationTab />
+          </div>
+        ) : (
+          <div className="settings-page">
+            <NotificationSettings />
+          </div>
+        )}
       </main>
 
       {/* Transaction Detail Drawer */}
