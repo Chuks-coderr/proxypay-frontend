@@ -35,6 +35,8 @@
     "@types/jest": "^30.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "axios": "^1.7.7",
     "@percy/cli": "^1.32.11",
     "@percy/playwright": "^1.1.2",
