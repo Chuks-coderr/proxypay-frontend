@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { format } from 'date-fns'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { TableVirtuoso, type TableVirtuosoHandle } from 'react-virtuoso'
@@ -6,13 +6,9 @@ import { useTransactionStore } from '../stores/transactionStore'
 import { trackFeatureFlagEvaluation, useFeatureFlagStore } from '../stores/featureFlagStore'
 import { Transaction } from '../services/api'
 import { TransactionTableSkeleton } from './TransactionTableSkeleton'
-import {
-  LONG_PRESS_DELAY_MS,
-  PREVIEW_DELAY_MS,
-  TransactionPreviewPosition,
-  TransactionRowPreview,
-} from './TransactionRowPreview'
-import { ProviderFilter, Provider } from './ProviderFilter'
+import { TransactionSearch, matchesSearch, HighlightMatch } from './TransactionSearch'
+import { DateRangePicker, DateRange, matchesDateRange } from './DateRangePicker'
+import { StatusFilter, TransactionStatus, matchesStatus } from './StatusFilter'
 import '../styles/TransactionsTable.css'
 
 interface SortState {
@@ -64,20 +60,9 @@ const previewForRow = (
 
 export const TransactionsTable: React.FC<{
   onRowClick: (tx: Transaction) => void
-  loadOnMount?: boolean
-}> = ({ onRowClick, loadOnMount = true }) => {
-  const {
-    transactions,
-    total,
-    loading,
-    error,
-    fetchTransactions,
-    filters,
-    setFilters,
-  } = useTransactionStore()
-  const showRowPreview = useFeatureFlagStore(
-    (state) => state.isEnabled('transaction-row-preview')
-  )
+}> = ({ onRowClick }) => {
+  const { transactions, loading, error, fetchTransactions } = useTransactionStore()
+
   const [sort, setSort] = useState<SortState>({ column: null, direction: 'asc' })
   const [preview, setPreview] = useState<PreviewState | null>(null)
   /** #495 — Multi-select provider filter state (persisted in component state) */
@@ -87,64 +72,26 @@ export const TransactionsTable: React.FC<{
   const longPressTriggered = useRef(false)
   const skipInitialFetch = useRef(!loadOnMount)
 
+  // ── Filter state ────────────────────────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = useState('')
+  const [dateRange, setDateRange] = useState<DateRange>({
+    preset: 'all',
+    startDate: '',
+    endDate: '',
+  })
+  const [selectedStatuses, setSelectedStatuses] = useState<TransactionStatus[]>([])
+
+  // ── Fetch on mount — pass empty filters so store defaults are preserved ─────
+  // App.tsx also calls fetchTransactions; we avoid a double fetch by relying on
+  // the store's loading flag.  If the store already has data, skip the call.
   useEffect(() => {
-    if (skipInitialFetch.current) {
-      skipInitialFetch.current = false
-      return
+    if (transactions.length === 0) {
+      fetchTransactions({})
     }
-    void fetchTransactions(filters || {})
-  }, [fetchTransactions, filters])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchTransactions])
 
-  useEffect(() => {
-    trackFeatureFlagEvaluation('transaction-row-preview')
-  }, [showRowPreview])
-
-  useEffect(() => {
-    if (loading || error) return
-    const filtersChanged = previousFilters.current !== filters
-    previousFilters.current = filters
-    const count = total ?? transactions.length
-    setAnnouncement(
-      `${filtersChanged ? 'Filters updated. ' : ''}${count} transaction${count === 1 ? '' : 's'} found.`
-    )
-  }, [error, filters, loading, total, transactions.length])
-
-  useEffect(() => {
-    return () => {
-      if (previewTimer.current) clearTimeout(previewTimer.current)
-      if (touchTimer.current) clearTimeout(touchTimer.current)
-    }
-  }, [])
-
-  const clearPreviewTimers = () => {
-    if (previewTimer.current) {
-      clearTimeout(previewTimer.current)
-      previewTimer.current = null
-    }
-    if (touchTimer.current) {
-      clearTimeout(touchTimer.current)
-      touchTimer.current = null
-    }
-  }
-
-  const hidePreview = () => {
-    clearPreviewTimers()
-    setPreview(null)
-  }
-
-  const schedulePreview = (
-    transaction: Transaction,
-    row: HTMLTableRowElement,
-    delay = PREVIEW_DELAY_MS
-  ) => {
-    clearPreviewTimers()
-    const position = previewForRow(row)
-    previewTimer.current = setTimeout(() => {
-      setPreview({ transaction, position })
-      previewTimer.current = null
-    }, delay)
-  }
-
+  // ── Sorting ─────────────────────────────────────────────────────────────────
   const handleSort = (column: keyof Transaction) => {
     setSort((prev) => ({
       column,
@@ -153,114 +100,46 @@ export const TransactionsTable: React.FC<{
     }))
   }
 
-  const pageSize = filters.limit || 50
-  const pageOffset = filters.offset || 0
-  const pageCount = Math.max(1, Math.ceil(total / pageSize))
-  const currentPage = Math.floor(pageOffset / pageSize) + 1
+  // ── Filter callbacks (stable references via useCallback) ────────────────────
+  const handleSearch = useCallback((query: string) => {
+    setSearchQuery(query)
+  }, [])
 
-  const changePage = (page: number) => {
-    setFilters({ offset: (page - 1) * pageSize })
-  }
+  const handleDateRange = useCallback((range: DateRange) => {
+    setDateRange(range)
+  }, [])
 
-  const handleKeyDown = (
-    event: React.KeyboardEvent<HTMLTableCellElement>,
-    index: number,
-    transaction: Transaction,
-  ) => {
-    if (event.target !== event.currentTarget) return
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
-      event.preventDefault()
-      const targetIndex = event.key === 'Home'
-        ? 0
-        : event.key === 'End'
-          ? sortedTransactions.length - 1
-          : Math.max(0, Math.min(sortedTransactions.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))
-      setActiveRowIndex(targetIndex)
-      const target = document.getElementById(`transaction-cell-${targetIndex}`)
-      if (target) {
-        target.focus()
-      } else {
-        pendingFocusIndex.current = targetIndex
-        virtuosoRef.current?.scrollToIndex({ index: targetIndex, align: 'center' })
-      }
-      return
-    }
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      hidePreview()
-      onRowClick(transaction)
-    }
-    if (event.key === 'Escape') {
-      hidePreview()
-    }
-  }
+  const handleStatusChange = useCallback((statuses: TransactionStatus[]) => {
+    setSelectedStatuses(statuses)
+  }, [])
 
-  const handleTouchStart = (
-    event: React.TouchEvent<HTMLTableCellElement>,
-    row: HTMLTableRowElement,
-    transaction: Transaction
-  ) => {
-    if (event.touches.length !== 1) return
-    longPressTriggered.current = false
-    clearPreviewTimers()
-    const position = previewForRow(row)
-    touchTimer.current = setTimeout(() => {
-      longPressTriggered.current = true
-      setPreview({
-        transaction,
-        position,
-      })
-      touchTimer.current = null
-    }, LONG_PRESS_DELAY_MS)
-  }
-
-  const handleTouchEnd = () => {
-    if (touchTimer.current) {
-      clearTimeout(touchTimer.current)
-      touchTimer.current = null
-    }
-  }
-
-  const sortedTransactions = useMemo(
-    () =>
-      [...transactions].sort((a, b) => {
-        if (!sort.column) return 0
-
-        const aVal = a[sort.column]
-        const bVal = b[sort.column]
-
-        if (aVal === bVal) return 0
-
-        const result =
-          typeof aVal === 'number' && typeof bVal === 'number'
-            ? aVal - bVal
-            : String(aVal).localeCompare(String(bVal))
-
-        return sort.direction === 'asc' ? result : -result
-      }),
-    [sort.column, sort.direction, transactions]
-  )
-
-  useEffect(() => {
-    setActiveRowIndex((current) =>
-      Math.min(current, Math.max(sortedTransactions.length - 1, 0))
+  // ── Composed filtering + sorting (AND logic) ─────────────────────────────────
+  const filteredAndSorted = useMemo(() => {
+    const filtered = (transactions ?? []).filter(
+      (tx) =>
+        matchesSearch(tx, searchQuery) &&
+        matchesDateRange(tx, dateRange) &&
+        matchesStatus(tx, selectedStatuses)
     )
-    if (
-      pendingFocusIndex.current !== null &&
-      pendingFocusIndex.current >= sortedTransactions.length
-    ) {
-      pendingFocusIndex.current = null
-    }
-  }, [sortedTransactions.length])
 
-  /** #495 — Apply provider filter after sort */
-  const filteredTransactions =
-    selectedProviders.length === 0
-      ? sortedTransactions
-      : sortedTransactions.filter((tx) =>
-          selectedProviders.includes(tx.provider as Provider)
-        )
+    if (!sort.column) return filtered
 
+    return [...filtered].sort((a, b) => {
+      const col = sort.column as keyof Transaction
+      const aVal = a[col]
+      const bVal = b[col]
+      if (aVal === bVal) return 0
+      const result =
+        typeof aVal === 'number' && typeof bVal === 'number'
+          ? aVal - bVal
+          : String(aVal).localeCompare(String(bVal))
+      return sort.direction === 'asc' ? result : -result
+    })
+  }, [transactions, searchQuery, dateRange, selectedStatuses, sort])
+
+  const totalCount = (transactions ?? []).length
+
+  // ── SortHeader sub-component ─────────────────────────────────────────────────
   const SortHeader: React.FC<{
     column: keyof Transaction
     label: string
@@ -353,28 +232,42 @@ export const TransactionsTable: React.FC<{
     return <div className="error-message">{error}</div>
   }
 
-  if (loading) {
+  if (loading && totalCount === 0) {
     return <TransactionTableSkeleton rows={5} />
   }
 
   return (
     <div className="transactions-table-container">
-      {/* #495 — Provider filter bar */}
-      <div className="transactions-table-toolbar" data-testid="transactions-toolbar">
-        <ProviderFilter
-          selectedProviders={selectedProviders}
-          transactions={transactions}
-          onChange={setSelectedProviders}
+      {/* ── Filter bar ─────────────────────────────────────────────────────── */}
+      <div className="filter-bar">
+        <TransactionSearch
+          onSearch={handleSearch}
+          resultCount={filteredAndSorted.length}
+          totalCount={totalCount}
         />
-        {selectedProviders.length > 0 && (
-          <span className="transactions-filter-summary" data-testid="filter-summary">
-            Showing{' '}
-            <strong>{filteredTransactions.length}</strong> of{' '}
-            <strong>{transactions.length}</strong> transactions
-          </span>
-        )}
+        <div className="filter-bar-right">
+          <DateRangePicker
+            transactions={transactions ?? []}
+            onRangeChange={handleDateRange}
+            filteredCount={filteredAndSorted.length}
+          />
+          <StatusFilter
+            transactions={transactions ?? []}
+            onStatusChange={handleStatusChange}
+          />
+        </div>
       </div>
 
+      {/* ── Results summary ─────────────────────────────────────────────────── */}
+      <div className="results-summary">
+        <span>
+          Showing{' '}
+          <strong>{filteredAndSorted.length}</strong> of{' '}
+          <strong>{totalCount}</strong> transaction{totalCount !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      {/* ── Table ───────────────────────────────────────────────────────────── */}
       <table className="transactions-table">
         <thead>
           <tr>
@@ -387,16 +280,16 @@ export const TransactionsTable: React.FC<{
           </tr>
         </thead>
         <tbody>
-          {filteredTransactions.length === 0 ? (
+          {filteredAndSorted.length === 0 ? (
             <tr>
               <td colSpan={6} className="empty-cell">
-                {selectedProviders.length > 0
-                  ? `No transactions found for selected provider${selectedProviders.length > 1 ? 's' : ''}`
-                  : 'No transactions found'}
+                {totalCount === 0
+                  ? 'No transactions found'
+                  : 'No transactions match the current filters'}
               </td>
             </tr>
           ) : (
-            filteredTransactions.map((tx) => (
+            filteredAndSorted.map((tx) => (
               <tr
                 key={tx.id}
                 onClick={() => {
@@ -428,14 +321,18 @@ export const TransactionsTable: React.FC<{
                 data-testid={`transaction-row-${tx.id}`}
                 className="transaction-row"
               >
-                <td>{tx.reference}</td>
+                <td>
+                  <HighlightMatch text={tx.reference} query={searchQuery} />
+                </td>
                 <td className="amount">${tx.amount.toFixed(2)}</td>
                 <td>
                   <span className={`status-badge status-${tx.status}`}>
                     {tx.status}
                   </span>
                 </td>
-                <td>{tx.provider}</td>
+                <td>
+                  <HighlightMatch text={tx.provider} query={searchQuery} />
+                </td>
                 <td>{format(new Date(tx.timestamp), 'MMM dd, yyyy')}</td>
                 <td className="action-cell">
                   <button

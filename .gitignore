@@ -1,13 +1,40 @@
 # Dependencies
 node_modules/
+dashboard/node_modules/
 
 # Docusaurus generated files
 .docusaurus/
 build/
 
-# macOS / Windows
+# ── Build artifacts ────────────────────────────────────────────────────────────
+dashboard/dist/
+
+# ── Test artifacts ────────────────────────────────────────────────────────────
+# Jest / Vitest snapshots
+**/__snapshots__/
+*.snap
+
+# Coverage reports
+coverage/
+.nyc_output/
+
+# ── OS / Editor artefacts ──────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ── Environment / secrets ──────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
 
 # Logs
 *.log

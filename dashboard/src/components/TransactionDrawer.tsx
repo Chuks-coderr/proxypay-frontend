@@ -42,6 +42,18 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [isOpen, onClose])
 
+  // Prevent body scroll when drawer is open
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = ''
+    }
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [isOpen])
+
   if (!transaction) return null
 
   const handlePrintReceipt = () => {
@@ -55,39 +67,34 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
 
   return (
     <>
-      {/* Overlay */}
-      {isOpen && !fullPage && (
-        <div className="drawer-overlay" onClick={onClose} aria-hidden="true" />
-      )}
+      {/* Overlay — rendered before drawer in DOM; use .visible class instead of
+          the broken `~ sibling` combinator which would require overlay after drawer */}
+      <div
+        className={`drawer-overlay${isOpen ? ' visible' : ''}`}
+        onClick={onClose}
+        aria-hidden="true"
+      />
 
       {/* Drawer */}
-      <div className={`transaction-drawer ${isOpen ? 'open' : ''} ${fullPage ? 'full-page' : ''}`}>
-        {/* Header */}
-        <div className="drawer-header">
+      <div
+        className={`transaction-drawer ${isOpen ? 'open' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Transaction Details"
+      >
+        {/* Fixed Header — always visible */}
+        <header className="drawer-header">
           <h2>Transaction Details</h2>
-          <div className="drawer-actions">
-            {!fullPage && onOpenFullPage && (
-              <button
-                className="close-button"
-                onClick={onOpenFullPage}
-                aria-label="Open full-page transaction view"
-                title="Open full-page view"
-              >
-                <ExternalLink size={20} />
-              </button>
-            )}
-            {fullPage && (
-              <button className="close-button" onClick={() => window.print()} aria-label="Print transaction">
-                <Printer size={20} />
-              </button>
-            )}
-            <button className="close-button" onClick={onClose} aria-label="Close transaction">
-              <X size={24} />
-            </button>
-          </div>
-        </div>
+          <button
+            className="close-button"
+            onClick={onClose}
+            aria-label="Close drawer"
+          >
+            <X size={24} />
+          </button>
+        </header>
 
-        {/* Content */}
+        {/* Scrollable Content */}
         <div className="drawer-content">
           {loading ? (
             <TransactionDetailSkeleton />
@@ -124,7 +131,7 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
 
           {/* Blockchain Info */}
           <section className="detail-section">
-            <h3>Blockchain & Mobile Money</h3>
+            <h3>Blockchain &amp; Mobile Money</h3>
             <div className="detail-grid">
               <div className="detail-item">
                 <label>Stellar Transaction Hash</label>
@@ -141,7 +148,7 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
 
           {/* Amount & Fees */}
           <section className="detail-section">
-            <h3>Amount & Fees</h3>
+            <h3>Amount &amp; Fees</h3>
             <div className="detail-grid">
               <div className="detail-item">
                 <label>Amount</label>
@@ -230,7 +237,17 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
             </>
           )}
         </div>
-        <p className="print-company-footer">ProxyPay transaction record</p>
+
+        {/* Fixed Footer — action buttons always accessible */}
+        <footer className="drawer-footer">
+          <button
+            className="close-footer-button"
+            onClick={onClose}
+            aria-label="Close transaction details"
+          >
+            Close
+          </button>
+        </footer>
       </div>
     </>
   )
