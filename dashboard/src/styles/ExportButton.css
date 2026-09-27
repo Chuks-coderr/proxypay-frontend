@@ -100,6 +100,24 @@
   transition: background-color var(--transition-fast);
 }
 
+.option-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--color-neutral-700);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.platform-select {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: 0.375rem;
+  background: white;
+  color: var(--color-neutral-900);
+  font-size: 0.9rem;
+}
+
 .option-item:hover {
   background-color: var(--color-neutral-50);
 }
@@ -139,6 +157,10 @@
   font-weight: 500;
 }
 
+.option-info .format-help {
+  color: var(--color-primary);
+}
+
 .action-button {
   display: block;
   width: 100%;
@@ -169,6 +191,13 @@
 
 .action-button.secondary:hover {
   background-color: var(--color-neutral-200);
+}
+
+.schedule-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
 }
 
 @media (max-width: 768px) {

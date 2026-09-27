@@ -3,6 +3,11 @@ import { CheckCircle2, AlertCircle, Loader, Send } from 'lucide-react'
 import { useNotificationStore } from '../stores/notificationStore'
 import { proxyPayAPI, WebhookTestResult } from '../services/api'
 import { SkeletonCard } from './Skeleton'
+import {
+  CorsDiagnostic,
+  getCorsDiagnostic,
+  subscribeCorsDiagnostic,
+} from '../services/security'
 import '../styles/NotificationSettings.css'
 
 interface WebhookTestHistoryEntry extends WebhookTestResult {
@@ -86,12 +91,41 @@ export const NotificationSettings: React.FC = () => {
   return (
     <div className="notification-settings">
       <header className="settings-header">
-        <h1>Notification Settings</h1>
-        <p>Configure which events trigger email and webhook notifications</p>
+        <div>
+          <h1>Notification Settings</h1>
+          <p>Configure which events trigger email and webhook notifications</p>
+        </div>
+        <div className="settings-history-actions">
+          <button onClick={() => void undo()} disabled={pastChanges.length === 0}>
+            Undo
+          </button>
+          <button onClick={() => void redo()} disabled={futureChanges.length === 0}>
+            Redo
+          </button>
+        </div>
       </header>
 
+      {pastChanges.length > 0 && (
+        <section className="change-history" aria-label="Notification change history">
+          <h2>Recent changes</h2>
+          <ol>
+            {pastChanges.map((change, index) => (
+              <li key={`${change.eventType}-${index}`}>
+                <span>{formatEventType(change.eventType)}</span>
+                <span>
+                  Email {change.previous.emailEnabled ? 'on' : 'off'} →{' '}
+                  {change.next.emailEnabled ? 'on' : 'off'},{' '}
+                  Webhook {change.previous.webhookEnabled ? 'on' : 'off'} →{' '}
+                  {change.next.webhookEnabled ? 'on' : 'off'}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+
       {error && (
-        <div className="alert alert-error">
+        <div className="alert alert-error" role="alert" aria-live="assertive">
           <AlertCircle size={18} />
           <span>{error}</span>
           <button onClick={clearError}>Dismiss</button>
@@ -209,6 +243,7 @@ export const NotificationSettings: React.FC = () => {
                     <label className="toggle-label">
                       <input
                         type="checkbox"
+                        aria-label={`Email notifications for ${formatEventType(setting.eventType)}`}
                         checked={setting.emailEnabled}
                         onChange={() =>
                           handleToggle(setting.eventType, 'email', setting.emailEnabled)
@@ -229,6 +264,7 @@ export const NotificationSettings: React.FC = () => {
                     <label className="toggle-label">
                       <input
                         type="checkbox"
+                        aria-label={`Webhook notifications for ${formatEventType(setting.eventType)}`}
                         checked={setting.webhookEnabled}
                         onChange={() =>
                           handleToggle(
