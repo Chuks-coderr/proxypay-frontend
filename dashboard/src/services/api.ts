@@ -151,7 +151,24 @@ export interface NotificationConfig {
   settings: NotificationSettings[]
 }
 
-type ApiPayload<T> = T | { data: T }
+export interface WebhookTestPayload {
+  id: string
+  eventType: string
+  createdAt: string
+  data: {
+    test: boolean
+    message: string
+  }
+}
+
+export interface WebhookTestResult {
+  status: number
+  body: unknown
+  payload: WebhookTestPayload
+  requestStartedAt: string
+  responseReceivedAt: string
+  attempts: number
+}
 
 class ProxyPayAPI {
   private client: AxiosInstance
@@ -336,6 +353,44 @@ class ProxyPayAPI {
     return data
   }
 
+  async testWebhook(eventType: string, retries = 2): Promise<WebhookTestResult> {
+    const payload: WebhookTestPayload = {
+      id: `webhook-test-${Date.now()}`,
+      eventType,
+      createdAt: new Date().toISOString(),
+      data: {
+        test: true,
+        message: 'This is a test webhook from ProxyPay.',
+      },
+    }
+    const requestStartedAt = new Date().toISOString()
+    let attempts = 0
+
+    while (attempts <= retries) {
+      attempts += 1
+      try {
+        const response = await this.client.post('/notifications/webhook/test', payload)
+        return {
+          status: response.status,
+          body: response.data,
+          payload,
+          requestStartedAt,
+          responseReceivedAt: new Date().toISOString(),
+          attempts,
+        }
+      } catch (error) {
+        const shouldRetry =
+          attempts <= retries &&
+          axios.isAxiosError(error) &&
+          (!error.response || error.response.status >= 500)
+        if (!shouldRetry) throw error
+      }
+    }
+
+    throw new Error('Webhook test failed after all retry attempts')
+  }
+
+  // Health check
   async healthCheck(): Promise<boolean> {
     try {
       const { data } = await this.client.get('/health')

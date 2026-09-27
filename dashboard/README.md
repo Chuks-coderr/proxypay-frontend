@@ -121,6 +121,7 @@ Set `VITE_SENTRY_DSN` in the deployment environment to enable Sentry component e
 - `GET /api/transactions/:id` - Get transaction detail
 - `GET /api/notifications/settings` - Fetch notification config
 - `PUT /api/notifications/settings/:eventType` - Update notification setting
+- `POST /api/notifications/webhook/test` - Send a test webhook for an event type
 - `GET /api/health` - Health check
 
 ### Transaction Data Model
