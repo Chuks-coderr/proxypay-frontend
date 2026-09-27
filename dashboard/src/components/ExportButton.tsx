@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from 'react'
-import { CalendarPlus, Download, Loader } from 'lucide-react'
+import React, { useState } from 'react'
+import { Download, FileText, Loader } from 'lucide-react'
 import { useTransactionStore } from '../stores/transactionStore'
 import { useExportScheduleStore } from '../stores/exportScheduleStore'
 import { useToastStore } from '../stores/toastStore'
 import { CSVExporter } from '../services/csv'
-import { sanitizeErrorMessage, validateExternalUrl } from '../services/security'
-import { ExportScheduleDialog } from './ExportScheduleDialog'
+import { printTransactionReport } from '../services/print'
 import '../styles/ExportButton.css'
 
 export const ExportButton: React.FC = () => {
@@ -88,6 +87,16 @@ export const ExportButton: React.FC = () => {
       toastError('Failed to export transactions. Please try again.')
       setExporting(false)
       setProgress(0)
+    }
+  }
+
+  const handleReport = () => {
+    try {
+      printTransactionReport(transactions)
+      setShowOptions(false)
+    } catch (error) {
+      console.error('Report generation failed:', error)
+      alert(error instanceof Error ? error.message : 'Failed to generate report')
     }
   }
 
@@ -207,12 +216,19 @@ export const ExportButton: React.FC = () => {
             Download {platform === 'generic' ? 'CSV' : 'import file'}
           </button>
 
-      <ExportScheduleDialog
-        isOpen={showScheduleDialog}
-        onClose={() => setShowScheduleDialog(false)}
-        filters={filters}
-        includeAuditTrail={includeAudit}
-      />
-    </>
+          <button className="action-button report" onClick={handleReport}>
+            <FileText size={16} />
+            Print / Save PDF Report
+          </button>
+
+          <button
+            className="action-button secondary"
+            onClick={() => setShowOptions(false)}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
   )
 }

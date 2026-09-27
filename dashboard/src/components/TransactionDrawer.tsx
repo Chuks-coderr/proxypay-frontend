@@ -2,7 +2,7 @@ import React, { useEffect } from 'react'
 import { format } from 'date-fns'
 import { Printer, X } from 'lucide-react'
 import { Transaction } from '../services/api'
-import { StatusTimeline } from './StatusTimeline'
+import { printTransactionReceipt } from '../services/print'
 import '../styles/TransactionDrawer.css'
 
 interface TransactionDrawerProps {
@@ -42,6 +42,15 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
 
   if (!transaction) return null
 
+  const handlePrintReceipt = () => {
+    try {
+      printTransactionReceipt(transaction)
+    } catch (error) {
+      console.error('Receipt generation failed:', error)
+      alert(error instanceof Error ? error.message : 'Failed to generate receipt')
+    }
+  }
+
   return (
     <>
       {/* Overlay */}
@@ -59,14 +68,16 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
       >
         {/* Header */}
         <div className="drawer-header">
-          <h2 id="transaction-drawer-heading">Transaction Details</h2>
-          <button
-            className="close-button"
-            onClick={onClose}
-            aria-label="Close drawer"
-          >
-            <X size={24} />
-          </button>
+          <h2>Transaction Details</h2>
+          <div className="drawer-actions">
+            <button className="print-button" onClick={handlePrintReceipt}>
+              <Printer size={16} />
+              Print Receipt
+            </button>
+            <button className="close-button" onClick={onClose} aria-label="Close drawer">
+              <X size={24} />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
