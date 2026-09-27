@@ -547,6 +547,9 @@ export default function ApiReference(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [customTemplates, setCustomTemplates] = useState<Record<string, Template[]>>({});
 
+  // Ref for the endpoint list nav — used for keyboard focus management (#442)
+  const navRef = useRef<HTMLElement>(null);
+
   // Search cache: key = `${specVersion}:${query}` → Endpoint[]
   const searchCache = useRef<Map<string, Endpoint[]>>(new Map());
 
@@ -591,7 +594,7 @@ export default function ApiReference(): React.JSX.Element {
   // Reset the selected endpoint when the filter changes
   useEffect(() => {
     setSelectedId(null);
-  }, [debouncedQuery]);
+  }, [debouncedQuery, pageSize]);
 
   const selectedIndex = selectedId ? filtered.findIndex((e) => e.id === selectedId) : -1;
   const selectedEndpoint = selectedIndex >= 0 ? filtered[selectedIndex] : null;
@@ -638,13 +641,21 @@ export default function ApiReference(): React.JSX.Element {
         <input
           type="search"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          maxLength={MAX_SEARCH_QUERY_LENGTH}
+          aria-invalid={searchError !== null}
+          aria-describedby={searchError ? 'api-search-error' : undefined}
+          onChange={(e) => {
+            const result = validateSearchQuery(e.target.value);
+            setSearchError(result.error);
+            if (!result.error) setQuery(result.value);
+          }}
           placeholder="Search endpoints…"
           aria-label="Search endpoints"
         />
-        <span className="api-search-count">
+        <span className="api-search-count" aria-live="polite">
           {filtered.length} / {allEndpoints.length} endpoints
         </span>
+        {searchError && <span id="api-search-error" role="alert">{searchError}</span>}
       </div>
 
       <div className="api-layout">
@@ -658,10 +669,21 @@ export default function ApiReference(): React.JSX.Element {
                 key={ep.id}
                 className={`api-endpoint-item${selectedId === ep.id ? ' selected' : ''}`}
                 onClick={() => selectEndpoint(ep)}
+                // Keyboard navigation (#442)
+                onKeyDown={(e) => handleListKeyDown(e, ep, listIdx)}
+                // roving tabIndex: only the selected (or first) item is in the tab order
+                tabIndex={selectedId === ep.id || (selectedId === null && listIdx === 0) ? 0 : -1}
+                role="tab"
+                aria-selected={selectedId === ep.id}
+                aria-controls="api-detail-panel"
+                id={`api-tab-${ep.id}`}
               >
                 <MethodBadge method={ep.method} />
                 <StatusBadge status={ep.status} />
-                <span className="api-endpoint-item-path">{ep.path}</span>
+                {/* #439 — highlight matching text in the path */}
+                <span className="api-endpoint-item-path">
+                  {highlightText(ep.path, debouncedQuery)}
+                </span>
               </button>
             ))
           )}
@@ -672,7 +694,12 @@ export default function ApiReference(): React.JSX.Element {
         </nav>
 
         {/* Detail panel */}
-        <main className="api-detail-panel">
+        <main
+          className="api-detail-panel"
+          id="api-detail-panel"
+          role="tabpanel"
+          aria-labelledby={selectedEndpoint ? `api-tab-${selectedEndpoint.id}` : undefined}
+        >
           {selectedEndpoint ? (
             <EndpointDetail
               endpoint={selectedEndpoint}
