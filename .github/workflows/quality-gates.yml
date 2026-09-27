@@ -13,9 +13,9 @@ permissions:
 
 jobs:
   quality:
-    name: Security, accessibility, and visual checks
+    name: Security, accessibility, Lighthouse, and visual checks
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -44,6 +44,19 @@ jobs:
       - name: Install browser engines
         run: npx playwright install --with-deps chromium firefox webkit
 
+      - name: Start built portal in background
+        run: |
+          npm run serve &
+          sleep 5
+          echo "Portal started on http://localhost:3000"
+        env:
+          PORT: 3000
+
+      - name: Run Lighthouse audits
+        run: npm run test:lighthouse
+        env:
+          LIGHTHOUSE_BASE_URL: http://localhost:3000
+
       - name: Run accessibility audits
         run: npm run test:accessibility
 
@@ -66,3 +79,38 @@ jobs:
           path: .quality-reports/
           if-no-files-found: ignore
           retention-days: 90
+
+      - name: Comment on PR with Lighthouse results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            try {
+              const reportPath = '.quality-reports/lighthouse-report.json';
+              if (fs.existsSync(reportPath)) {
+                const report = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
+                const scores = report.scores;
+                
+                let comment = '## 📊 Lighthouse Audit Results\n\n';
+                comment += '| Category | Score | Threshold |\n';
+                comment += '|----------|-------|----------|\n';
+                
+                for (const [key, score] of Object.entries(scores)) {
+                  const threshold = report.thresholds[key];
+                  const status = score >= threshold ? '✅' : '❌';
+                  comment += `| ${key} | ${status} ${score}/100 | ${threshold}/100 |\n`;
+                }
+                
+                github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              }
+            } catch (err) {
+              console.log('Could not post Lighthouse results:', err.message);
+            }
