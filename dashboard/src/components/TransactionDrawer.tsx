@@ -2,11 +2,14 @@ import React, { useEffect } from 'react'
 import { format } from 'date-fns'
 import { ExternalLink, Printer, X } from 'lucide-react'
 import { Transaction } from '../services/api'
+import { printTransactionReceipt } from '../services/print'
 import '../styles/TransactionDrawer.css'
 
 interface TransactionDrawerProps {
   transaction: Transaction | null
   isOpen: boolean
+  loading: boolean
+  error: string | null
   onClose: () => void
   fullPage?: boolean
   onOpenFullPage?: () => void
@@ -15,10 +18,18 @@ interface TransactionDrawerProps {
 export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
   transaction,
   isOpen,
+  loading,
+  error,
   onClose,
   fullPage = false,
   onOpenFullPage,
 }) => {
+  const handlePrint = () => {
+    if (window.confirm('Open the print dialog for this transaction?')) {
+      window.print()
+    }
+  }
+
   // Handle Escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -32,6 +43,15 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
   }, [isOpen, onClose])
 
   if (!transaction) return null
+
+  const handlePrintReceipt = () => {
+    try {
+      printTransactionReceipt(transaction)
+    } catch (error) {
+      console.error('Receipt generation failed:', error)
+      alert(error instanceof Error ? error.message : 'Failed to generate receipt')
+    }
+  }
 
   return (
     <>
@@ -69,6 +89,14 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
 
         {/* Content */}
         <div className="drawer-content">
+          {loading ? (
+            <TransactionDetailSkeleton />
+          ) : error ? (
+            <div className="drawer-error" role="alert">
+              {error}
+            </div>
+          ) : (
+            <>
           {/* Basic Info */}
           <section className="detail-section">
             <h3>Basic Information</h3>
@@ -164,6 +192,11 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
             </div>
           </section>
 
+          <StatusTimeline
+            transaction={transaction}
+            currentStatus={transaction.status}
+          />
+
           {/* Failure Reason */}
           {transaction.failureReason && (
             <section className="detail-section error-section">
@@ -194,8 +227,31 @@ export const TransactionDrawer: React.FC<TransactionDrawerProps> = ({
               )}
             </div>
           </section>
+            </>
+          )}
         </div>
+        <p className="print-company-footer">ProxyPay transaction record</p>
       </div>
     </>
   )
 }
+
+const TransactionDetailSkeleton: React.FC = () => (
+  <div className="transaction-detail-skeleton" aria-label="Loading transaction details">
+    {['Basic Information', 'Blockchain & Mobile Money', 'Amount & Fees', 'Timestamps', 'Audit Trail'].map(
+      (section) => (
+        <section className="detail-section" key={section}>
+          <div className="skeleton-block skeleton-heading" />
+          <div className="skeleton-block skeleton-line" />
+          <div className="skeleton-block skeleton-line skeleton-line-short" />
+          {section === 'Audit Trail' && (
+            <>
+              <div className="skeleton-block skeleton-line" />
+              <div className="skeleton-block skeleton-line skeleton-line-short" />
+            </>
+          )}
+        </section>
+      )
+    )}
+  </div>
+)

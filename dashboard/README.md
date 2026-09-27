@@ -20,11 +20,27 @@ A modern React-based dashboard for viewing transaction history, exporting data a
 - Progress indication for large datasets (10,000+ rows)
 - No backend round-trip for client-side exports
 
+### 🧾 Receipts & PDF Reports
+- Print a professional receipt for any transaction from its detail drawer
+- Generate a printable report for all transactions currently loaded
+- Use the browser print dialog's “Save as PDF” option to create a PDF file
+
 ### 🔔 Notification Settings
 - Configure which events trigger notifications
 - Independent email and webhook toggles per event type
 - Optimistic UI updates with rollback on failure
 - Real-time sync with backend
+
+### 🚦 Feature Flags
+- Configure dashboard flags per user or browser session
+- Review active flags in the built-in debug panel
+- Flag toggles and evaluations are emitted as analytics actions
+- User values are keyed by `auth_user_id` or a JWT `sub` claim; session values use `sessionStorage`
+
+### ⚡ Performance Monitoring
+- Track page load, LCP, CLS, INP, API response, and React commit duration
+- Review persisted seven-day response trends and threshold alerts
+- Forward metrics to Datadog when the host application exposes `window.DD_RUM.addAction`
 
 ## Technology Stack
 
@@ -81,6 +97,8 @@ src/
 │   ├── TransactionDrawer.tsx    # Detail sidebar drawer
 │   ├── ExportButton.tsx         # CSV export functionality
 │   └── NotificationSettings.tsx # Notification config page
+│   ├── FeatureFlagSettings.tsx  # Feature flag management and debug panel
+│   └── PerformanceDashboard.tsx # Web Vitals and operation metrics
 ├── services/            # API & utility services
 │   ├── api.ts          # ProxyPay API client
 │   └── csv.ts          # CSV export utilities
@@ -98,12 +116,17 @@ src/
 
 The dashboard connects to a ProxyPay backend API at `/api`. Update the base URL in `src/services/api.ts` if needed.
 
+### Error Monitoring
+
+Set `VITE_SENTRY_DSN` in the deployment environment to enable Sentry component error reporting and the in-app feedback dialog. Reports include the page and React component stack; form values and default PII are not sent.
+
 ### Required Endpoints
 
 - `GET /api/transactions` - List transactions with filters
 - `GET /api/transactions/:id` - Get transaction detail
 - `GET /api/notifications/settings` - Fetch notification config
 - `PUT /api/notifications/settings/:eventType` - Update notification setting
+- `POST /api/notifications/webhook/test` - Send a test webhook for an event type
 - `GET /api/health` - Health check
 
 ### Transaction Data Model
@@ -137,6 +160,11 @@ interface Transaction {
 - **Optional Audit Trail**: Include full audit history in export
 - **Proper Escaping**: Handles commas, quotes, and newlines in data
 - **Timestamp-based Filenames**: Auto-generated filenames include date and time
+
+## Receipts & PDF Reports
+
+Receipt and report generation is client-side and uses a print-optimized document. The
+browser's print dialog supports physical printing and PDF output via “Save as PDF”.
 
 ## Notification Settings
 

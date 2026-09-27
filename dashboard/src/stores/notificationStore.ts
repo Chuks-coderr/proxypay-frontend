@@ -5,6 +5,12 @@ import {
   proxyPayAPI,
 } from '../services/api'
 
+export interface NotificationChange {
+  eventType: string
+  previous: NotificationSettings
+  next: NotificationSettings
+}
+
 interface NotificationStore {
   settings: NotificationSettings[]
   loading: boolean
@@ -20,10 +26,14 @@ interface NotificationStore {
     emailEnabled: boolean,
     webhookEnabled: boolean
   ) => Promise<void>
+  undo: () => Promise<void>
+  redo: () => Promise<void>
   clearError: () => void
   fetchNotifications: () => Promise<void>
   markNotificationRead: (id: string) => Promise<void>
 }
+
+const MAX_HISTORY_SIZE = 20
 
 export const useNotificationStore = create<NotificationStore>((set, get) => ({
   settings: [],
@@ -90,6 +100,17 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
           s.eventType === eventType ? updated : s
         ),
         optimisticUpdates,
+        pastChanges: previousSetting
+          ? [
+              ...state.pastChanges,
+              {
+                eventType,
+                previous: previousSetting,
+                next: updated,
+              },
+            ].slice(-MAX_HISTORY_SIZE)
+          : state.pastChanges,
+        futureChanges: [],
       }))
     } catch (error) {
       // Rollback on failure

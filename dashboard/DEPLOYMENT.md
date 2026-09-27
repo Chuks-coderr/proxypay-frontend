@@ -126,6 +126,27 @@ Update notification settings for a specific event type.
 }
 ```
 
+#### POST /api/notifications/webhook/test
+Send a sample webhook to the configured endpoint. The dashboard retries transient
+network and server errors up to two times.
+
+**Request Body:**
+```json
+{
+  "id": "webhook-test-1720000000000",
+  "eventType": "payment.settled",
+  "createdAt": "2024-07-03T12:00:00.000Z",
+  "data": {
+    "test": true,
+    "message": "This is a test webhook from ProxyPay."
+  }
+}
+```
+
+The endpoint response status and body are shown in the dashboard, along with
+request and response timestamps. Test results are retained in the current
+settings-page session.
+
 ---
 
 ### 3. Health Check Endpoint
@@ -218,6 +239,8 @@ Vite automatically proxies `/api/*` to `http://localhost:3001`.
    Access-Control-Allow-Headers: Content-Type, Authorization
    Access-Control-Allow-Credentials: true
    ```
+
+  Use an exact allow-origin value for the dashboard, never `*` for authenticated APIs. Browsers reject wildcard origins when credentials are enabled. The dashboard settings view reports CORS headers observed on successful cross-origin responses; it cannot inspect responses blocked by the browser, so verify the server policy and preflight behavior at the API or reverse proxy as well.
 
 ### Scenario 3: Same Domain
 
