@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from 'axios'
+import { recordPerformanceMetric } from './performance'
 
 export type TransactionStatus =
   | 'pending'
@@ -59,7 +60,10 @@ export interface TransactionFilters {
   dateFrom?: string
   dateTo?: string
   status?: string
+  /** Single provider (legacy, kept for API compat) */
   provider?: string
+  /** Multi-select providers for UI filtering (#495) */
+  providers?: Array<'vodafone' | 'mtn' | 'airtel'>
   limit?: number
   offset?: number
 }
@@ -151,10 +155,12 @@ type ApiPayload<T> = T | { data: T }
 
 class ProxyPayAPI {
   private client: AxiosInstance
+  private authToken: string | null = null
 
   constructor(baseURL = '/api') {
     this.client = axios.create({
       baseURL,
+      withCredentials: true,
       headers: {
         'Content-Type': 'application/json',
       },
@@ -164,6 +170,36 @@ class ProxyPayAPI {
     if (token) {
       this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`
     }
+
+    const requestStartedAt = new WeakMap<object, number>()
+    const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+    const recordResponseTime = (config?: object & { url?: string; method?: string }) => {
+      if (!config) return
+      const startedAt = requestStartedAt.get(config)
+      if (startedAt === undefined) return
+      requestStartedAt.delete(config)
+      recordPerformanceMetric('api-response', now() - startedAt, {
+        endpoint: config.url || 'unknown',
+        method: (config.method || 'get').toUpperCase(),
+      })
+    }
+
+    this.client.interceptors.request.use((config) => {
+      requestStartedAt.set(config, now())
+      return config
+    })
+    this.client.interceptors.response.use(
+      (response) => {
+        recordResponseTime(response.config)
+        return response
+      },
+      (error: unknown) => {
+        if (error && typeof error === 'object' && 'config' in error) {
+          recordResponseTime((error as { config?: object }).config)
+        }
+        return Promise.reject(error)
+      }
+    )
   }
 
   private unwrap<T>(payload: ApiPayload<T>): T {
