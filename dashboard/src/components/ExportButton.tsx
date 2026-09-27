@@ -4,6 +4,7 @@ import { useTransactionStore } from '../stores/transactionStore'
 import { useExportScheduleStore } from '../stores/exportScheduleStore'
 import { useToastStore } from '../stores/toastStore'
 import { CSVExporter } from '../services/csv'
+import { sanitizeErrorMessage, validateExternalUrl } from '../services/security'
 import { ExportScheduleDialog } from './ExportScheduleDialog'
 import '../styles/ExportButton.css'
 
@@ -22,7 +23,11 @@ export const ExportButton: React.FC = () => {
 
   useEffect(() => {
     const handleCompletion = (event: Event) => {
-      const detail = (event as CustomEvent<{ scheduleId?: string; message?: string }>).detail
+      const detail = (event as CustomEvent<{
+        scheduleId?: string
+        message?: string
+        url?: string
+      }>).detail
       const message = detail?.message || 'Your scheduled transaction export is ready.'
       setExportAnnouncement(message)
       setCompletionNotification({
@@ -88,6 +93,47 @@ export const ExportButton: React.FC = () => {
   return (
     <>
       <div className="export-container">
+        {completionMessage && (
+          <div className="export-completion-notice" role="status">
+            <span>{completionMessage}</span>
+            {completionUrlWarning && (
+              <span role="alert">The notification link was blocked because it is not a safe HTTPS URL.</span>
+            )}
+            {completionUrl && (
+              <button
+                type="button"
+                onClick={() => {
+                  const trustedDomains = (import.meta.env.VITE_TRUSTED_REDIRECT_DOMAINS || '')
+                    .split(',')
+                    .map((domain: string) => domain.trim())
+                    .filter(Boolean)
+                  const validatedUrl = validateExternalUrl(
+                    completionUrl,
+                    window.location.origin,
+                    trustedDomains
+                  )
+                  if (!validatedUrl) return
+                  const isExternal = validatedUrl.url.origin !== window.location.origin
+                  if (
+                    isExternal &&
+                    !window.confirm(
+                      validatedUrl.trusted
+                        ? `Open the trusted external destination ${validatedUrl.url.host}?`
+                        : `This destination is not in the trusted allowlist (${validatedUrl.url.host}). Continue?`
+                    )
+                  ) return
+                  console.info('[security-audit] External redirect approved', {
+                    host: validatedUrl.url.host,
+                    timestamp: new Date().toISOString(),
+                  })
+                  window.open(validatedUrl.url.href, '_blank', 'noopener,noreferrer')
+                }}
+              >
+                Open export link
+              </button>
+            )}
+          </div>
+        )}
         <button
           className={`export-button ${exporting ? 'loading' : ''}`}
           onClick={() => (exporting ? null : setShowOptions(!showOptions))}

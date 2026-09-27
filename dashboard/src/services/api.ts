@@ -155,10 +155,12 @@ type ApiPayload<T> = T | { data: T }
 
 class ProxyPayAPI {
   private client: AxiosInstance
+  private authToken: string | null = null
 
   constructor(baseURL = '/api') {
     this.client = axios.create({
       baseURL,
+      withCredentials: true,
       headers: {
         'Content-Type': 'application/json',
       },
