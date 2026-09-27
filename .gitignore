@@ -56,4 +56,21 @@ lerna-debug.log*
 # ── Misc ──────────────────────────────────────────────────────────────────────
 *.tsbuildinfo
 .cache/
-*.local
+
+# ── TypeScript compiled output ─────────────────────────────────────────────────
+dist/
+out/
+*.js.map
+*.d.ts.map
+
+# ── Load test output / baseline files ─────────────────────────────────────────
+load-test-results/
+baseline-*.json
+*.baseline.json
+
+# ── Temporary / scratch files ─────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.bak
+
