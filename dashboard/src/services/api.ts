@@ -166,6 +166,32 @@ export interface DashboardNotification {
   actionUrl?: string
 }
 
+/**
+ * Tracks the latest in-flight request per key so that stale (superseded)
+ * responses can be discarded instead of overwriting newer results (#720).
+ */
+export class LatestRequestTracker {
+  private latest = new Map<string, number>()
+  private counter = 0
+
+  /** Begin a new request for `key`; returns a token identifying this request. */
+  begin(key: string): number {
+    const token = ++this.counter
+    this.latest.set(key, token)
+    return token
+  }
+
+  /** True when `token` is still the most recent request for `key`. */
+  isLatest(key: string, token: number): boolean {
+    return this.latest.get(key) === token
+  }
+
+  /** Forget the tracked request for `key` (e.g. on unmount). */
+  clear(key: string): void {
+    this.latest.delete(key)
+  }
+}
+
 class ProxyPayAPI {
   private client: AxiosInstance
   private authToken: string | null = null
@@ -309,7 +335,7 @@ class ProxyPayAPI {
     id: string,
     schedule: Partial<CreateExportSchedule>
   ): Promise<ExportSchedule> {
-    const { data } = await this.client.patch(
+    const { data } = await this.client.put(
       `/transactions/exports/schedules/${encodeURIComponent(id)}`,
       schedule
     )
@@ -322,60 +348,44 @@ class ProxyPayAPI {
     )
   }
 
-  async getExportCompletionNotifications(): Promise<ExportCompletionNotification[]> {
-    const { data } = await this.client.get(
-      '/transactions/exports/notifications'
-    )
+  async getExportNotifications(): Promise<ExportCompletionNotification[]> {
+    const { data } = await this.client.get('/transactions/exports/notifications')
     return this.unwrap<ExportCompletionNotification[]>(data) || []
   }
 
-  async getNotificationSettings(): Promise<NotificationConfig> {
-    const { data } = await this.client.get('/notifications/settings')
-    return data
+  async getNotificationConfig(): Promise<NotificationConfig> {
+    const { data } = await this.client.get('/transactions/exports/notifications/config')
+    return this.unwrap<NotificationConfig>(data)
   }
 
-  async updateNotificationSetting(
-    eventType: string,
-    emailEnabled: boolean,
-    webhookEnabled: boolean
-  ): Promise<NotificationSettings> {
+  async updateNotificationConfig(
+    config: NotificationConfig
+  ): Promise<NotificationConfig> {
     const { data } = await this.client.put(
-      `/notifications/settings/${eventType}`,
-      {
-        emailEnabled,
-        webhookEnabled,
-      }
+      '/transactions/exports/notifications/config',
+      config
     )
-    return data
+    return this.unwrap<NotificationConfig>(data)
   }
 
-  async scheduleExport(options: {
-    includeAuditTrail: boolean
-    scheduledFor: string
-    filters?: TransactionFilters
-  }): Promise<ScheduledExport> {
-    const { data } = await this.client.post('/exports', options)
-    return data
+  async getScheduledExports(): Promise<ScheduledExport[]> {
+    const { data } = await this.client.get('/transactions/exports/scheduled')
+    return this.unwrap<ScheduledExport[]>(data) || []
   }
 
-  async getNotifications(): Promise<DashboardNotification[]> {
+  async getDashboardNotifications(): Promise<DashboardNotification[]> {
     const { data } = await this.client.get('/notifications')
-    return data.notifications ?? data
+    return this.unwrap<DashboardNotification[]>(data) || []
   }
 
   async markNotificationRead(id: string): Promise<void> {
-    await this.client.patch(`/notifications/${encodeURIComponent(id)}`, { read: true })
-  }
-
-  // Health check
-  async healthCheck(): Promise<boolean> {
-    try {
-      const { data } = await this.client.get('/health')
-      return data.status === 'ok'
-    } catch {
-      return false
-    }
+    await this.client.post(`/notifications/${encodeURIComponent(id)}/read`)
   }
 }
 
-export const proxyPayAPI = new ProxyPayAPI()
+export interface ApiPayload<T> {
+  data: T
+}
+
+export const api = new ProxyPayAPI()
+export default api
