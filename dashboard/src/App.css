@@ -153,6 +153,16 @@
   border-bottom-color: var(--color-primary);
 }
 
+/* Keyboard focus visibility for nav controls */
+.nav-tab:focus-visible,
+.notification-center summary:focus-visible,
+.notification-item button:focus-visible,
+.notification-item a:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
 /* Main Content */
 .app-main {
   flex: 1;
