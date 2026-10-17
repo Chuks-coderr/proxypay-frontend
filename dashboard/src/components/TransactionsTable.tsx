@@ -71,6 +71,8 @@ export const TransactionsTable: React.FC<{
   onRowClick: (tx: Transaction) => void
 }> = ({ onRowClick }) => {
   const { transactions, loading, error, fetchTransactions } = useTransactionStore()
+  // #723 — Server-reported total, distinct from the number of loaded rows.
+  const serverTotal = useTransactionStore((state) => state.total)
 
   const [sort, setSort] = useState<SortState>({ column: null, direction: 'asc' })
   const [preview, setPreview] = useState<PreviewState | null>(null)
@@ -154,8 +156,24 @@ export const TransactionsTable: React.FC<{
     })
   }, [transactions, searchQuery, dateRange, selectedStatuses, selectedProviders, sort])
 
-  const totalCount = (transactions ?? []).length
+  // #723 — Distinguish the server total from the number of loaded rows.
+  // `serverTotal` reflects the full result set on the server; `loadedCount`
+  // is only what the client currently holds. When filters are applied
+  // remotely the server total already reflects them; when filters are applied
+  // client-side (search/date/status/provider) the server total is the
+  // unfiltered total and the filtered count is derived from loaded rows.
+  const loadedCount = (transactions ?? []).length
   const visibleCount = filteredAndSorted.length
+  const hasClientFilters =
+    searchQuery.trim() !== '' ||
+    dateRange.preset !== 'all' ||
+    selectedStatuses.length > 0 ||
+    selectedProviders.length > 0
+  const unfilteredTotal = serverTotal ?? loadedCount
+  const totalCount = hasClientFilters ? visibleCount : unfilteredTotal
+  const totalLabel = hasClientFilters
+    ? `Showing ${visibleCount} of ${loadedCount} loaded (filtered)`
+    : `Total: ${unfilteredTotal}`
 
   // ── SortHeader sub-component ─────────────────────────────────────────────────
   const SortHeader: React.FC<{
@@ -224,75 +242,3 @@ export const TransactionsTable: React.FC<{
       setActiveRowIndex(index)
       const row = event.currentTarget.closest('tr')
       if (row) schedulePreview(tx, row)
-    },
-    onBlur: (event: React.FocusEvent<HTMLTableCellElement>) => {
-      const row = event.currentTarget.closest('tr')
-      if (
-        !row ||
-        !(event.relatedTarget instanceof Node) ||
-        !row.contains(event.relatedTarget)
-      ) hidePreview()
-    },
-    onKeyDown: (event: React.KeyboardEvent<HTMLTableCellElement>) => handleKeyDown(event, index, tx),
-    onTouchStart: (event: React.TouchEvent<HTMLTableCellElement>) => {
-      const row = event.currentTarget.closest('tr')
-      if (row) handleTouchStart(event, row, tx)
-    },
-    onTouchEnd: handleTouchEnd,
-    onTouchCancel: handleTouchEnd,
-    onTouchMove: handleTouchEnd,
-    onContextMenu: (event: React.MouseEvent<HTMLTableCellElement>) => {
-      event.preventDefault()
-      hidePreview()
-    },
-  })
-
-  return (
-    <div className="transactions-table-container">
-      <div className="transactions-table-toolbar">
-        <TransactionSearch value={searchQuery} onChange={handleSearch} />
-        <DateRangePicker value={dateRange} onChange={handleDateRange} />
-        <StatusFilter value={selectedStatuses} onChange={handleStatusChange} />
-        <ProviderFilter value={selectedProviders} onChange={handleProviderChange} />
-      </div>
-      <div className="transactions-table-summary" aria-live="polite">
-        Showing {visibleCount} of {totalCount} transactions
-      </div>
-      {loading && <TransactionTableSkeleton />}
-      {error && <div className="transactions-table-error">{error}</div>}
-      {!loading && !error && (
-        <TableVirtuoso
-          ref={virtuosoRef}
-          data={filteredAndSorted}
-          components={virtuosoComponents}
-          fixedHeaderContent={renderTableHeader}
-          itemContent={(index, tx) => (
-            <tr
-              key={tx.id}
-              className={index === activeRowIndex ? 'active-row' : undefined}
-            >
-              <td {...rowCellHandlers(index, tx)}>{tx.reference}</td>
-              <td {...rowCellHandlers(index, tx)}>{formatAmount(tx.amount)}</td>
-              <td {...rowCellHandlers(index, tx)}>{tx.status}</td>
-              <td {...rowCellHandlers(index, tx)}>{tx.provider}</td>
-              <td {...rowCellHandlers(index, tx)}>
-                {format(new Date(tx.timestamp), 'yyyy-MM-dd HH:mm')}
-              </td>
-              <td>
-                <button type="button" onClick={() => onRowClick(tx)}>
-                  View
-                </button>
-              </td>
-            </tr>
-          )}
-        />
-      )}
-      {preview && (
-        <TransactionPreview
-          transaction={preview.transaction}
-          position={preview.position}
-        />
-      )}
-    </div>
-  )
-}

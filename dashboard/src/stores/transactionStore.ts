@@ -28,6 +28,27 @@ const defaultFilters: TransactionFilters = {
 let latestDetailRequest = 0
 let latestListRequest = 0
 
+/**
+ * Filters that are applied server-side. When any of these are set, the
+ * server `total` reflects the filtered result set, not the unfiltered
+ * dataset. Client-side counts (e.g. `transactions.length`) only ever
+ * reflect the rows currently loaded in the client.
+ */
+const REMOTE_FILTER_KEYS: (keyof TransactionFilters)[] = [
+  'status',
+  'provider',
+  'currency',
+  'startDate',
+  'endDate',
+  'search',
+]
+
+export const hasRemoteFilters = (filters: TransactionFilters): boolean =>
+  REMOTE_FILTER_KEYS.some((key) => {
+    const value = filters[key]
+    return value !== undefined && value !== null && value !== ''
+  })
+
 export const useTransactionStore = create<TransactionStore>((set) => ({
   transactions: [],
   selectedTransaction: null,
@@ -46,6 +67,8 @@ export const useTransactionStore = create<TransactionStore>((set) => ({
       if (requestId !== latestListRequest) return
       set({
         transactions: result.data,
+        // `total` is the server-reported count for the current filter set.
+        // It is NOT the number of rows loaded in the client.
         total: result.total,
         filters,
         loading: false,

@@ -74,3 +74,58 @@ describe('transactionStore stale response handling', () => {
     expect(useTransactionStore.getState().transactions).toEqual([{ id: 'second' }])
   })
 })
+
+describe('transactionStore server totals', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useTransactionStore.setState({
+      filters: { limit: 2, offset: 0 },
+      transactions: [],
+      total: 0,
+      loading: false,
+      error: null,
+    })
+  })
+
+  it('stores the server total rather than the loaded row count', async () => {
+    vi.mocked(proxyPayAPI.getTransactions).mockResolvedValueOnce({
+      transactions: [{ id: 'a' }, { id: 'b' }],
+      total: 137,
+    } as never)
+
+    await useTransactionStore.getState().fetchTransactions()
+
+    const state = useTransactionStore.getState()
+    expect(state.transactions).toHaveLength(2)
+    expect(state.total).toBe(137)
+  })
+
+  it('keeps the server total when filters are applied remotely', async () => {
+    vi.mocked(proxyPayAPI.getTransactions).mockResolvedValueOnce({
+      transactions: [{ id: 'a' }],
+      total: 42,
+    } as never)
+
+    useTransactionStore.getState().setFilters({ status: 'settled' })
+    await useTransactionStore.getState().fetchTransactions()
+
+    const state = useTransactionStore.getState()
+    expect(state.filters.status).toBe('settled')
+    expect(state.transactions).toHaveLength(1)
+    // The server total reflects the filtered result set, not the loaded rows.
+    expect(state.total).toBe(42)
+  })
+
+  it('does not overwrite the server total with the loaded row count', async () => {
+    vi.mocked(proxyPayAPI.getTransactions).mockResolvedValueOnce({
+      transactions: [{ id: 'a' }, { id: 'b' }],
+      total: 500,
+    } as never)
+
+    await useTransactionStore.getState().fetchTransactions()
+
+    expect(useTransactionStore.getState().total).not.toBe(
+      useTransactionStore.getState().transactions.length,
+    )
+  })
+})
