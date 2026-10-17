@@ -192,6 +192,81 @@
   color: var(--color-neutral-900);
 }
 
+/* First-run developer path */
+.getting-started {
+  padding: 1.5rem;
+  background: white;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 0.5rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.getting-started h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-neutral-900);
+  margin-bottom: 0.5rem;
+}
+
+.getting-started > p {
+  color: var(--color-neutral-600);
+  font-size: 0.95rem;
+  margin-bottom: 1rem;
+}
+
+.getting-started-steps {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: getting-started-step;
+}
+
+.getting-started-step {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.75rem;
+  border: 1px solid var(--color-neutral-100);
+  border-radius: 0.5rem;
+  background: var(--color-neutral-50);
+}
+
+.getting-started-step::before {
+  counter-increment: getting-started-step;
+  content: counter(getting-started-step);
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: white;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.getting-started-step h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-neutral-900);
+  margin-bottom: 0.25rem;
+}
+
+.getting-started-step p {
+  color: var(--color-neutral-600);
+  font-size: 0.9rem;
+  margin-bottom: 0.35rem;
+}
+
+.getting-started-step a {
+  color: var(--color-primary);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
 /* Loading and Error States */
 .error-message {
   padding: 1.5rem;
