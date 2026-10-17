@@ -166,6 +166,139 @@ export interface DashboardNotification {
   actionUrl?: string
 }
 
+/**
+ * A single OpenAPI validation problem tied to a specific location in the
+ * document via a JSON Pointer (RFC 6901) path (#710).
+ */
+export interface ValidationIssue {
+  /** JSON Pointer path, e.g. `/paths/~1transactions~1{id}/get/parameters/0` */
+  path: string
+  /** Human-readable description of the problem */
+  message: string
+  /** Optional severity so callers can distinguish warnings from errors */
+  severity?: 'error' | 'warning'
+  /** Optional keyword that triggered the failure (e.g. `required`, `type`) */
+  keyword?: string
+}
+
+/**
+ * Structured result of validating an OpenAPI document (#710).
+ * `valid` is true only when there are no error-severity issues.
+ */
+export interface ValidationResult {
+  valid: boolean
+  /** Concise one-line summary suitable for a banner */
+  summary: string
+  /** Individual issues with field-level JSON Pointer context */
+  issues: ValidationIssue[]
+}
+
+/**
+ * Escape a single JSON Pointer reference token per RFC 6901.
+ */
+function escapePointerToken(token: string): string {
+  return token.replace(/~/g, '~0').replace(/\//g, '~1')
+}
+
+/**
+ * Build a JSON Pointer from a sequence of path segments.
+ */
+export function toJsonPointer(segments: Array<string | number>): string {
+  if (segments.length === 0) return ''
+  return '/' + segments.map((s) => escapePointerToken(String(s))).join('/')
+}
+
+/**
+ * Normalize a raw validation error (from a validator or API response) into a
+ * structured {@link ValidationIssue} with a JSON Pointer path (#710).
+ */
+export function normalizeValidationIssue(raw: unknown): ValidationIssue {
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>
+    const segments = Array.isArray(obj.path)
+      ? (obj.path as Array<string | number>)
+      : typeof obj.instancePath === 'string'
+        ? obj.instancePath.split('/').filter((s) => s.length > 0)
+        : typeof obj.path === 'string'
+          ? obj.path.split('/').filter((s) => s.length > 0)
+          : []
+    const message =
+      typeof obj.message === 'string' && obj.message.length > 0
+        ? obj.message
+        : 'Validation failed'
+    const issue: ValidationIssue = {
+      path: toJsonPointer(segments),
+      message,
+    }
+    if (obj.severity === 'warning' || obj.severity === 'error') {
+      issue.severity = obj.severity
+    }
+    if (typeof obj.keyword === 'string') {
+      issue.keyword = obj.keyword
+    }
+    return issue
+  }
+  return { path: '', message: String(raw ?? 'Validation failed') }
+}
+
+/**
+ * Build a concise summary line for a set of validation issues (#710).
+ */
+export function summarizeValidationIssues(issues: ValidationIssue[]): string {
+  const errorCount = issues.filter((i) => i.severity !== 'warning').length
+  if (issues.length === 0) return 'Document is valid'
+  if (errorCount === 0) {
+    return `${issues.length} validation warning${issues.length === 1 ? '' : 's'}`
+  }
+  return `${errorCount} validation error${errorCount === 1 ? '' : 's'}`
+}
+
+/**
+ * Parse a validation response payload into a structured {@link ValidationResult}.
+ * Falls back to a general failure message when the payload cannot be parsed (#710).
+ */
+export function parseValidationResult(payload: unknown): ValidationResult {
+  try {
+    if (payload && typeof payload === 'object') {
+      const obj = payload as Record<string, unknown>
+      const rawIssues = Array.isArray(obj.issues)
+        ? obj.issues
+        : Array.isArray(obj.errors)
+          ? obj.errors
+          : null
+      if (rawIssues) {
+        const issues = rawIssues.map(normalizeValidationIssue)
+        const valid =
+          typeof obj.valid === 'boolean'
+            ? obj.valid
+            : !issues.some((i) => i.severity !== 'warning')
+        return {
+          valid,
+          summary:
+            typeof obj.summary === 'string' && obj.summary.length > 0
+              ? obj.summary
+              : summarizeValidationIssues(issues),
+          issues,
+        }
+      }
+      if (typeof obj.message === 'string' && obj.message.length > 0) {
+        return {
+          valid: false,
+          summary: obj.message,
+          issues: [{ path: '', message: obj.message }],
+        }
+      }
+    }
+  } catch {
+    // fall through to safe fallback below
+  }
+  return {
+    valid: false,
+    summary: 'Validation failed: unable to parse validation details',
+    issues: [],
+  }
+}
+
 class ProxyPayAPI {
   private client: AxiosInstance
   private authToken: string | null = null
@@ -309,73 +442,6 @@ class ProxyPayAPI {
     id: string,
     schedule: Partial<CreateExportSchedule>
   ): Promise<ExportSchedule> {
-    const { data } = await this.client.patch(
-      `/transactions/exports/schedules/${encodeURIComponent(id)}`,
-      schedule
-    )
-    return this.unwrap<ExportSchedule>(data)
-  }
+    const { data } = await this.cl
 
-  async deleteExportSchedule(id: string): Promise<void> {
-    await this.client.delete(
-      `/transactions/exports/schedules/${encodeURIComponent(id)}`
-    )
-  }
-
-  async getExportCompletionNotifications(): Promise<ExportCompletionNotification[]> {
-    const { data } = await this.client.get(
-      '/transactions/exports/notifications'
-    )
-    return this.unwrap<ExportCompletionNotification[]>(data) || []
-  }
-
-  async getNotificationSettings(): Promise<NotificationConfig> {
-    const { data } = await this.client.get('/notifications/settings')
-    return data
-  }
-
-  async updateNotificationSetting(
-    eventType: string,
-    emailEnabled: boolean,
-    webhookEnabled: boolean
-  ): Promise<NotificationSettings> {
-    const { data } = await this.client.put(
-      `/notifications/settings/${eventType}`,
-      {
-        emailEnabled,
-        webhookEnabled,
-      }
-    )
-    return data
-  }
-
-  async scheduleExport(options: {
-    includeAuditTrail: boolean
-    scheduledFor: string
-    filters?: TransactionFilters
-  }): Promise<ScheduledExport> {
-    const { data } = await this.client.post('/exports', options)
-    return data
-  }
-
-  async getNotifications(): Promise<DashboardNotification[]> {
-    const { data } = await this.client.get('/notifications')
-    return data.notifications ?? data
-  }
-
-  async markNotificationRead(id: string): Promise<void> {
-    await this.client.patch(`/notifications/${encodeURIComponent(id)}`, { read: true })
-  }
-
-  // Health check
-  async healthCheck(): Promise<boolean> {
-    try {
-      const { data } = await this.client.get('/health')
-      return data.status === 'ok'
-    } catch {
-      return false
-    }
-  }
-}
-
-export const proxyPayAPI = new ProxyPayAPI()
+/* … truncated 1863 chars — edit only what you need near the top … */
