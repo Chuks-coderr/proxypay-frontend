@@ -11,8 +11,29 @@ import './App.css'
 
 type Page = 'transactions' | 'reconciliation' | 'settings'
 
+const VALID_PAGES: Page[] = ['transactions', 'reconciliation', 'settings']
+
+function readPageFromUrl(): Page {
+  if (typeof window === 'undefined') return 'transactions'
+  const page = new URLSearchParams(window.location.search).get('page')
+  return page && (VALID_PAGES as string[]).includes(page) ? (page as Page) : 'transactions'
+}
+
+function writePageToUrl(page: Page) {
+  if (typeof window === 'undefined') return
+  const params = new URLSearchParams(window.location.search)
+  if (page === 'transactions') {
+    params.delete('page')
+  } else {
+    params.set('page', page)
+  }
+  const query = params.toString()
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`
+  window.history.replaceState(null, '', nextUrl)
+}
+
 export default function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('transactions')
+  const [currentPage, setCurrentPage] = useState<Page>(readPageFromUrl)
   const {
     selectedTransaction,
     setSelectedTransaction,
@@ -30,6 +51,11 @@ export default function App() {
   useEffect(() => {
     fetchTransactions(filters)
   }, [])
+
+  // Keep the selected tab in the URL so it can be bookmarked/shared
+  useEffect(() => {
+    writePageToUrl(currentPage)
+  }, [currentPage])
 
   const handleRowClick = (tx: Transaction) => {
     setSelectedTransaction(tx)
