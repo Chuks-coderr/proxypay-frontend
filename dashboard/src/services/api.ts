@@ -166,6 +166,120 @@ export interface DashboardNotification {
   actionUrl?: string
 }
 
+/**
+ * OpenAPI parameter serialization styles (#713).
+ * See https://swagger.io/docs/specification/serialization/
+ */
+export type ParameterStyle =
+  | 'form'
+  | 'simple'
+  | 'spaceDelimited'
+  | 'pipeDelimited'
+  | 'deepObject'
+
+export type ParameterLocation = 'query' | 'path' | 'header' | 'cookie'
+
+export interface ParameterSerializationOptions {
+  style?: ParameterStyle
+  explode?: boolean
+  location?: ParameterLocation
+}
+
+type Primitive = string | number | boolean
+
+const encode = (value: Primitive): string => encodeURIComponent(String(value))
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const defaultStyle = (location: ParameterLocation): ParameterStyle =>
+  location === 'path' || location === 'header' ? 'simple' : 'form'
+
+const defaultExplode = (style: ParameterStyle): boolean => style === 'form'
+
+/**
+ * Serialize a single parameter value according to its OpenAPI style/explode
+ * metadata. Returns the encoded query-string fragment (without a leading `?`).
+ * For path/header/cookie locations the raw (unencoded) value is returned so
+ * callers can encode it in the appropriate context.
+ */
+export function serializeParameter(
+  name: string,
+  value: unknown,
+  options: ParameterSerializationOptions = {}
+): string {
+  const location = options.location ?? 'query'
+  const style = options.style ?? defaultStyle(location)
+  const explode = options.explode ?? defaultExplode(style)
+  const encodedName = encodeURIComponent(name)
+
+  if (value === undefined || value === null) return ''
+
+  if (Array.isArray(value)) {
+    const items = value.map((item) => encode(item as Primitive))
+    if (style === 'spaceDelimited') {
+      return `${encodedName}=${items.join('%20')}`
+    }
+    if (style === 'pipeDelimited') {
+      return `${encodedName}=${items.join('|')}`
+    }
+    if (style === 'simple') {
+      return items.join(',')
+    }
+    // form (default for query/cookie)
+    if (explode) {
+      return items.map((item) => `${encodedName}=${item}`).join('&')
+    }
+    return `${encodedName}=${items.join(',')}`
+  }
+
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value).filter(
+      ([, v]) => v !== undefined && v !== null
+    )
+    if (style === 'deepObject') {
+      return entries
+        .map(([k, v]) => `${encodedName}%5B${encodeURIComponent(k)}%5D=${encode(v as Primitive)}`)
+        .join('&')
+    }
+    if (style === 'simple') {
+      return entries.map(([k, v]) => `${encodeURIComponent(k)},${encode(v as Primitive)}`).join(',')
+    }
+    // form
+    if (explode) {
+      return entries
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encode(v as Primitive)}`)
+        .join('&')
+    }
+    const flat = entries
+      .map(([k, v]) => `${encodeURIComponent(k)},${encode(v as Primitive)}`)
+      .join(',')
+    return `${encodedName}=${flat}`
+  }
+
+  return `${encodedName}=${encode(value as Primitive)}`
+}
+
+/**
+ * Serialize a set of parameters into a query string using each parameter's
+ * style/explode metadata. Returns a string without a leading `?`.
+ */
+export function serializeQueryParameters(
+  params: Record<string, unknown>,
+  metadata: Record<string, ParameterSerializationOptions> = {}
+): string {
+  const parts: string[] = []
+  for (const [name, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue
+    const fragment = serializeParameter(name, value, {
+      location: 'query',
+      ...metadata[name],
+    })
+    if (fragment) parts.push(fragment)
+  }
+  return parts.join('&')
+}
+
 class ProxyPayAPI {
   private client: AxiosInstance
   private authToken: string | null = null
@@ -309,73 +423,6 @@ class ProxyPayAPI {
     id: string,
     schedule: Partial<CreateExportSchedule>
   ): Promise<ExportSchedule> {
-    const { data } = await this.client.patch(
-      `/transactions/exports/schedules/${encodeURIComponent(id)}`,
-      schedule
-    )
-    return this.unwrap<ExportSchedule>(data)
-  }
+    const { data } = await this.cl
 
-  async deleteExportSchedule(id: string): Promise<void> {
-    await this.client.delete(
-      `/transactions/exports/schedules/${encodeURIComponent(id)}`
-    )
-  }
-
-  async getExportCompletionNotifications(): Promise<ExportCompletionNotification[]> {
-    const { data } = await this.client.get(
-      '/transactions/exports/notifications'
-    )
-    return this.unwrap<ExportCompletionNotification[]>(data) || []
-  }
-
-  async getNotificationSettings(): Promise<NotificationConfig> {
-    const { data } = await this.client.get('/notifications/settings')
-    return data
-  }
-
-  async updateNotificationSetting(
-    eventType: string,
-    emailEnabled: boolean,
-    webhookEnabled: boolean
-  ): Promise<NotificationSettings> {
-    const { data } = await this.client.put(
-      `/notifications/settings/${eventType}`,
-      {
-        emailEnabled,
-        webhookEnabled,
-      }
-    )
-    return data
-  }
-
-  async scheduleExport(options: {
-    includeAuditTrail: boolean
-    scheduledFor: string
-    filters?: TransactionFilters
-  }): Promise<ScheduledExport> {
-    const { data } = await this.client.post('/exports', options)
-    return data
-  }
-
-  async getNotifications(): Promise<DashboardNotification[]> {
-    const { data } = await this.client.get('/notifications')
-    return data.notifications ?? data
-  }
-
-  async markNotificationRead(id: string): Promise<void> {
-    await this.client.patch(`/notifications/${encodeURIComponent(id)}`, { read: true })
-  }
-
-  // Health check
-  async healthCheck(): Promise<boolean> {
-    try {
-      const { data } = await this.client.get('/health')
-      return data.status === 'ok'
-    } catch {
-      return false
-    }
-  }
-}
-
-export const proxyPayAPI = new ProxyPayAPI()
+/* … truncated 1863 chars — edit only what you need near the top … */
