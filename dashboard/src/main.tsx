@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import * as Sentry from '@sentry/react'
 import App from './App'
 import { DashboardErrorBoundary } from './components/DashboardErrorBoundary'
+import { PortalSearch } from './components/PortalSearch'
 import './index.css'
 
 if (import.meta.env.VITE_SENTRY_DSN) {
@@ -17,6 +18,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <DashboardErrorBoundary>
       <App />
+      <PortalSearch />
     </DashboardErrorBoundary>
   </React.StrictMode>,
 )
