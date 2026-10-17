@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { format } from 'date-fns'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { TableVirtuoso, type TableVirtuosoHandle } from 'react-virtuoso'
@@ -58,6 +58,15 @@ const previewForRow = (
   return { top, left }
 }
 
+/** #722 — Match a transaction against the selected provider set. */
+const matchesProviders = (
+  tx: Transaction,
+  providers: Provider[]
+): boolean => {
+  if (providers.length === 0) return true
+  return providers.some((provider) => provider === tx.provider)
+}
+
 export const TransactionsTable: React.FC<{
   onRowClick: (tx: Transaction) => void
 }> = ({ onRowClick }) => {
@@ -113,13 +122,21 @@ export const TransactionsTable: React.FC<{
     setSelectedStatuses(statuses)
   }, [])
 
+  // ── Provider selection — reset paging when the provider set changes ─────────
+  const handleProviderChange = useCallback((providers: Provider[]) => {
+    setSelectedProviders(providers)
+    setActiveRowIndex(0)
+    virtuosoRef.current?.scrollToIndex({ index: 0, align: 'start' })
+  }, [])
+
   // ── Composed filtering + sorting (AND logic) ─────────────────────────────────
   const filteredAndSorted = useMemo(() => {
     const filtered = (transactions ?? []).filter(
       (tx) =>
         matchesSearch(tx, searchQuery) &&
         matchesDateRange(tx, dateRange) &&
-        matchesStatus(tx, selectedStatuses)
+        matchesStatus(tx, selectedStatuses) &&
+        matchesProviders(tx, selectedProviders)
     )
 
     if (!sort.column) return filtered
@@ -135,9 +152,10 @@ export const TransactionsTable: React.FC<{
           : String(aVal).localeCompare(String(bVal))
       return sort.direction === 'asc' ? result : -result
     })
-  }, [transactions, searchQuery, dateRange, selectedStatuses, sort])
+  }, [transactions, searchQuery, dateRange, selectedStatuses, selectedProviders, sort])
 
   const totalCount = (transactions ?? []).length
+  const visibleCount = filteredAndSorted.length
 
   // ── SortHeader sub-component ─────────────────────────────────────────────────
   const SortHeader: React.FC<{
@@ -224,201 +242,57 @@ export const TransactionsTable: React.FC<{
     onTouchCancel: handleTouchEnd,
     onTouchMove: handleTouchEnd,
     onContextMenu: (event: React.MouseEvent<HTMLTableCellElement>) => {
-      if (longPressTriggered.current) event.preventDefault()
+      event.preventDefault()
+      hidePreview()
     },
   })
 
-  if (error) {
-    return <div className="error-message">{error}</div>
-  }
-
-  if (loading && totalCount === 0) {
-    return <TransactionTableSkeleton rows={5} />
-  }
-
   return (
     <div className="transactions-table-container">
-      {/* ── Filter bar ─────────────────────────────────────────────────────── */}
-      <div className="filter-bar">
-        <TransactionSearch
-          onSearch={handleSearch}
-          resultCount={filteredAndSorted.length}
-          totalCount={totalCount}
-        />
-        <div className="filter-bar-right">
-          <DateRangePicker
-            transactions={transactions ?? []}
-            onRangeChange={handleDateRange}
-            filteredCount={filteredAndSorted.length}
-          />
-          <StatusFilter
-            transactions={transactions ?? []}
-            onStatusChange={handleStatusChange}
-          />
-        </div>
+      <div className="transactions-table-toolbar">
+        <TransactionSearch value={searchQuery} onChange={handleSearch} />
+        <DateRangePicker value={dateRange} onChange={handleDateRange} />
+        <StatusFilter value={selectedStatuses} onChange={handleStatusChange} />
+        <ProviderFilter value={selectedProviders} onChange={handleProviderChange} />
       </div>
-
-      {/* ── Results summary ─────────────────────────────────────────────────── */}
-      <div className="results-summary">
-        <span>
-          Showing{' '}
-          <strong>{filteredAndSorted.length}</strong> of{' '}
-          <strong>{totalCount}</strong> transaction{totalCount !== 1 ? 's' : ''}
-        </span>
+      <div className="transactions-table-summary" aria-live="polite">
+        Showing {visibleCount} of {totalCount} transactions
       </div>
-
-      {/* ── Table ───────────────────────────────────────────────────────────── */}
-      <table className="transactions-table">
-        <thead>
-          <tr>
-            <SortHeader column="reference" label="Reference" />
-            <SortHeader column="amount" label="Amount" />
-            <SortHeader column="status" label="Status" />
-            <SortHeader column="provider" label="Provider" />
-            <SortHeader column="timestamp" label="Date" />
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filteredAndSorted.length === 0 ? (
-            <tr>
-              <td colSpan={6} className="empty-cell">
-                {totalCount === 0
-                  ? 'No transactions found'
-                  : 'No transactions match the current filters'}
+      {loading && <TransactionTableSkeleton />}
+      {error && <div className="transactions-table-error">{error}</div>}
+      {!loading && !error && (
+        <TableVirtuoso
+          ref={virtuosoRef}
+          data={filteredAndSorted}
+          components={virtuosoComponents}
+          fixedHeaderContent={renderTableHeader}
+          itemContent={(index, tx) => (
+            <tr
+              key={tx.id}
+              className={index === activeRowIndex ? 'active-row' : undefined}
+            >
+              <td {...rowCellHandlers(index, tx)}>{tx.reference}</td>
+              <td {...rowCellHandlers(index, tx)}>{formatAmount(tx.amount)}</td>
+              <td {...rowCellHandlers(index, tx)}>{tx.status}</td>
+              <td {...rowCellHandlers(index, tx)}>{tx.provider}</td>
+              <td {...rowCellHandlers(index, tx)}>
+                {format(new Date(tx.timestamp), 'yyyy-MM-dd HH:mm')}
+              </td>
+              <td>
+                <button type="button" onClick={() => onRowClick(tx)}>
+                  View
+                </button>
               </td>
             </tr>
-          ) : (
-            filteredAndSorted.map((tx) => (
-              <tr
-                key={tx.id}
-                onClick={() => {
-                  if (longPressTriggered.current) {
-                    longPressTriggered.current = false
-                    return
-                  }
-                  onRowClick(tx)
-                }}
-                onMouseEnter={(event) => showRowPreview && schedulePreview(tx, event.currentTarget)}
-                onMouseLeave={hidePreview}
-                onFocus={(event) => showRowPreview && schedulePreview(tx, event.currentTarget)}
-                onBlur={hidePreview}
-                onKeyDown={(event) => handleKeyDown(event, tx)}
-                onTouchStart={(event) => handleTouchStart(event, tx)}
-                onTouchEnd={handleTouchEnd}
-                onTouchCancel={handleTouchEnd}
-                onTouchMove={handleTouchEnd}
-                onContextMenu={(event) => {
-                  if (longPressTriggered.current) event.preventDefault()
-                }}
-                tabIndex={0}
-                aria-label={`View transaction ${tx.reference}, $${tx.amount.toFixed(2)}, ${tx.status}, ${tx.provider}`}
-                aria-describedby={
-                  preview?.transaction.id === tx.id
-                    ? 'transaction-row-preview'
-                    : undefined
-                }
-                data-testid={`transaction-row-${tx.id}`}
-                className="transaction-row"
-              >
-                <td>
-                  <HighlightMatch text={tx.reference} query={searchQuery} />
-                </td>
-                <td className="amount">${tx.amount.toFixed(2)}</td>
-                <td>
-                  <span className={`status-badge status-${tx.status}`}>
-                    {tx.status}
-                  </span>
-                </td>
-                <td>
-                  <HighlightMatch text={tx.provider} query={searchQuery} />
-                </td>
-                <td>{format(new Date(tx.timestamp), 'MMM dd, yyyy')}</td>
-                <td className="action-cell">
-                  <button
-                    className="view-button"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      hidePreview()
-                      onRowClick(tx)
-                    }}
-                  >
-                    View Details
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        ) : (
-          <TableVirtuoso
-            ref={virtuosoRef}
-            className="transactions-table-viewport"
-            data={sortedTransactions}
-            computeItemKey={(_index, tx) => tx.id}
-            components={virtuosoComponents}
-            fixedHeaderContent={renderTableHeader}
-            rangeChanged={({ startIndex, endIndex }) => {
-              const pending = pendingFocusIndex.current
-              if (pending !== null && pending >= startIndex && pending <= endIndex) {
-                document.getElementById(`transaction-cell-${pending}`)?.focus()
-                pendingFocusIndex.current = null
-              }
-            }}
-            itemContent={(index, tx) => {
-              const interactions = rowCellHandlers(index, tx)
-              const previewDescription = preview?.transaction.id === tx.id
-                ? 'transaction-row-preview'
-                : undefined
-
-              return (
-                <>
-                  <td
-                    {...interactions}
-                    id={`transaction-cell-${index}`}
-                    data-testid={`transaction-row-${tx.id}`}
-                    className="transaction-row"
-                    tabIndex={activeRowIndex === index ? 0 : -1}
-                    aria-label={`View transaction ${tx.reference}, $${tx.amount.toFixed(2)}, ${tx.status}, ${tx.provider}`}
-                    aria-describedby={previewDescription}
-                  >
-                    {tx.reference}
-                  </td>
-                  <td {...interactions} className="amount">${tx.amount.toFixed(2)}</td>
-                  <td {...interactions}>
-                    <span className={`status-badge status-${tx.status}`}>
-                      {tx.status}
-                    </span>
-                  </td>
-                  <td {...interactions}>{tx.provider}</td>
-                  <td {...interactions}>{format(new Date(tx.timestamp), 'MMM dd, yyyy')}</td>
-                  <td {...interactions} className="action-cell">
-                    <button
-                      className="view-button"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        hidePreview()
-                        onRowClick(tx)
-                      }}
-                    >
-                      View Details
-                    </button>
-                  </td>
-                </>
-              )
-            }}
-          />
-        )}
-      </div>
-      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        {announcement}
-      </div>
-      {preview && (
-        <TransactionRowPreview
-          transaction={preview.transaction}
-          position={preview.position}
-          visible
+          )}
         />
       )}
-    </>
+      {preview && (
+        <TransactionPreview
+          transaction={preview.transaction}
+          position={preview.position}
+        />
+      )}
+    </div>
   )
 }

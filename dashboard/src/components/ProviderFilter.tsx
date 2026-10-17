@@ -24,6 +24,29 @@ const PROVIDER_LABELS: Record<Provider, string> = {
   airtel: '🔴 Airtel',
 }
 
+/**
+ * Returns true when a transaction matches the current provider selection.
+ * An empty selection means "all providers" (no filtering).
+ */
+export const matchesProviderSelection = (
+  transaction: Transaction,
+  selectedProviders: Provider[]
+): boolean => {
+  if (selectedProviders.length === 0) return true
+  return selectedProviders.includes(transaction.provider as Provider)
+}
+
+/**
+ * Applies the provider selection to a transaction set, preserving order.
+ */
+export const filterTransactionsByProvider = (
+  transactions: Transaction[],
+  selectedProviders: Provider[]
+): Transaction[] => {
+  if (selectedProviders.length === 0) return transactions
+  return transactions.filter((t) => matchesProviderSelection(t, selectedProviders))
+}
+
 export interface ProviderFilterProps {
   /** Currently selected providers (empty = all) */
   selectedProviders: Provider[]
