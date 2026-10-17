@@ -153,6 +153,57 @@
   border-bottom-color: var(--color-primary);
 }
 
+/* Operation status badges */
+.operation-status-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+
+.operation-status-badge--new {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.operation-status-badge--experimental {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.operation-status-badge--deprecated {
+  background: #fee2e2;
+  color: #991b1b;
+  text-decoration: line-through;
+}
+
+.operation-status-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.75rem;
+  color: var(--color-neutral-600);
+}
+
+.operation-status-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.operation-status-legend .operation-status-badge {
+  margin-left: 0;
+}
+
 /* Main Content */
 .app-main {
   flex: 1;
