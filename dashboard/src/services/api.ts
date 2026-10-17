@@ -281,6 +281,154 @@ export function serializeQueryParameters(
 }
 
 /**
+ * Request body media-type editors (#715).
+ *
+ * Operations may declare one or more request body media types. The workbench
+ * picks a matching editor and constructs the appropriate `BodyInit`:
+ *  - `application/json` (and `+json`) → JSON editor → string body
+ *  - `multipart/form-data` → key/value editor → `FormData`
+ *  - `application/x-www-form-urlencoded` → key/value editor → `URLSearchParams`
+ *  - binary (`application/octet-stream`, `image/*`, etc.) → file editor → `Blob`
+ *  - `text/*` → plain text editor → string body
+ *
+ * Unsupported media types are surfaced explicitly so callers never silently
+ * send malformed data.
+ */
+export type BodyEditorKind = 'json' | 'form' | 'urlencoded' | 'binary' | 'text' | 'unsupported'
+
+export interface BodyEditorSelection {
+  kind: BodyEditorKind
+  /** The media type the editor was selected for */
+  mediaType: string
+  /** True when the media type is not supported by any editor */
+  unsupported: boolean
+  /** Human-readable reason when unsupported */
+  reason?: string
+}
+
+const isJsonMediaType = (mediaType: string): boolean => {
+  const base = mediaType.split(';')[0].trim().toLowerCase()
+  return base === 'application/json' || base.endsWith('+json')
+}
+
+const isBinaryMediaType = (mediaType: string): boolean => {
+  const base = mediaType.split(';')[0].trim().toLowerCase()
+  if (base === 'application/octet-stream') return true
+  if (base.startsWith('image/')) return true
+  if (base.startsWith('audio/')) return true
+  if (base.startsWith('video/')) return true
+  if (base === 'application/pdf') return true
+  if (base === 'application/zip') return true
+  return false
+}
+
+/**
+ * Choose the editor kind for a single declared media type.
+ */
+export function selectBodyEditor(mediaType: string): BodyEditorSelection {
+  const base = mediaType.split(';')[0].trim().toLowerCase()
+  if (isJsonMediaType(base)) {
+    return { kind: 'json', mediaType, unsupported: false }
+  }
+  if (base === 'multipart/form-data') {
+    return { kind: 'form', mediaType, unsupported: false }
+  }
+  if (base === 'application/x-www-form-urlencoded') {
+    return { kind: 'urlencoded', mediaType, unsupported: false }
+  }
+  if (isBinaryMediaType(base)) {
+    return { kind: 'binary', mediaType, unsupported: false }
+  }
+  if (base.startsWith('text/')) {
+    return { kind: 'text', mediaType, unsupported: false }
+  }
+  return {
+    kind: 'unsupported',
+    mediaType,
+    unsupported: true,
+    reason: `No editor available for media type "${mediaType}"`,
+  }
+}
+
+/**
+ * Pick the best editor from an operation's declared media types. JSON is
+ * preferred when present, otherwise the first supported media type is used.
+ * Returns `undefined` when no media types are declared.
+ */
+export function selectBodyEditorForMediaTypes(
+  mediaTypes: string[] | undefined
+): BodyEditorSelection | undefined {
+  if (!mediaTypes || mediaTypes.length === 0) return undefined
+  const selections = mediaTypes.map(selectBodyEditor)
+  const json = selections.find((s) => s.kind === 'json')
+  if (json) return json
+  const supported = selections.find((s) => !s.unsupported)
+  if (supported) return supported
+  return selections[0]
+}
+
+export interface FormFieldEntry {
+  key: string
+  value: string
+  /** Optional file for multipart fields */
+  file?: File | Blob
+}
+
+/**
+ * Construct the `BodyInit` for a given editor selection.
+ *
+ * Throws when the media type is unsupported so callers can surface the error
+ * instead of sending malformed data.
+ */
+export function buildBodyInit(
+  selection: BodyEditorSelection,
+  input: {
+    json?: string
+    text?: string
+    fields?: FormFieldEntry[]
+    file?: Blob | File | null
+  }
+): BodyInit {
+  switch (selection.kind) {
+    case 'json':
+      return input.json ?? ''
+    case 'text':
+      return input.text ?? ''
+    case 'form': {
+      const formData = new FormData()
+      for (const field of input.fields ?? []) {
+        if (!field.key) continue
+        if (field.file) {
+          formData.append(field.key, field.file)
+        } else {
+          formData.append(field.key, field.value)
+        }
+      }
+      return formData
+    }
+    case 'urlencoded': {
+      const params = new URLSearchParams()
+      for (const field of input.fields ?? []) {
+        if (!field.key) continue
+        params.append(field.key, field.value)
+      }
+      return params
+    }
+    case 'binary': {
+      if (!input.file) {
+        throw new Error(`A file is required for media type "${selection.mediaType}"`)
+      }
+      return input.file
+    }
+    case 'unsupported':
+    default:
+      throw new Error(
+        selection.reason ?? `Unsupported media type "${selection.mediaType}"`
+      )
+  }
+}
+
+/**
  * JSON Schema validation for request bodies (#714).
  *
  * Client-side validation is opt-in: callers pass the operation's declared
@@ -307,172 +455,6 @@ type JSONSchema = Record<string, unknown>
 const typeOf = (value: unknown): string => {
   if (value === null) return 'null'
   if (Array.isArray(value)) return 'array'
-  if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'number'
+  if (typeof value === 'object') return 'object'
   return typeof value
 }
-
-const matchesType = (value: unknown, type: string): boolean => {
-  const actual = typeOf(value)
-  if (type === 'number') return actual === 'number' || actual === 'integer'
-  if (type === 'integer') return actual === 'integer'
-  return actual === type
-}
-
-const joinPath = (base: string, segment: string | number): string =>
-  `${base}/${String(segment).replace(/~/g, '~0').replace(/\//g, '~1')}`
-
-function validateNode(
-  value: unknown,
-  schema: JSONSchema,
-  path: string,
-  errors: SchemaValidationError[]
-): void {
-  if (schema.type !== undefined) {
-    const types = Array.isArray(schema.type) ? schema.type : [schema.type]
-    if (!types.some((t) => matchesType(value, String(t)))) {
-      errors.push({
-        path: path || '/',
-        message: `Expected ${types.join(' or ')} but received ${typeOf(value)}`,
-      })
-      return
-    }
-  }
-
-  if (Array.isArray(schema.enum) && !schema.enum.some((option) => option === value)) {
-    errors.push({
-      path: path || '/',
-      message: `Value must be one of: ${schema.enum.map((v) => JSON.stringify(v)).join(', ')}`,
-    })
-  }
-
-  if (typeof value === 'string') {
-    if (typeof schema.minLength === 'number' && value.length < schema.minLength) {
-      errors.push({ path: path || '/', message: `Must be at least ${schema.minLength} characters` })
-    }
-    if (typeof schema.maxLength === 'number' && value.length > schema.maxLength) {
-      errors.push({ path: path || '/', message: `Must be at most ${schema.maxLength} characters` })
-    }
-    if (typeof schema.pattern === 'string') {
-      try {
-        if (!new RegExp(schema.pattern).test(value)) {
-          errors.push({ path: path || '/', message: `Must match pattern ${schema.pattern}` })
-        }
-      } catch {
-        // Ignore malformed patterns; server validation remains authoritative.
-      }
-    }
-  }
-
-  if (typeof value === 'number') {
-    if (typeof schema.minimum === 'number' && value < schema.minimum) {
-      errors.push({ path: path || '/', message: `Must be >= ${schema.minimum}` })
-    }
-    if (typeof schema.maximum === 'number' && value > schema.maximum) {
-      errors.push({ path: path || '/', message: `Must be <= ${schema.maximum}` })
-    }
-  }
-
-  if (isPlainObject(value)) {
-    const properties = isPlainObject(schema.properties) ? schema.properties : {}
-    const required = Array.isArray(schema.required) ? schema.required : []
-    for (const key of required) {
-      if (!(key in value)) {
-        errors.push({ path: joinPath(path, String(key)), message: 'Required field is missing' })
-      }
-    }
-    for (const [key, childSchema] of Object.entries(properties)) {
-      if (key in value && isPlainObject(childSchema)) {
-        validateNode(value[key], childSchema, joinPath(path, key), errors)
-      }
-    }
-  }
-
-  if (Array.isArray(value) && isPlainObject(schema.items)) {
-    value.forEach((item, index) => {
-      validateNode(item, schema.items as JSONSchema, joinPath(path, index), errors)
-    })
-  }
-}
-
-/**
- * Validate a parsed JSON request body against an operation's declared schema.
- * Returns `skipped: true` when no schema is available so callers can fall back
- * to server-side validation.
- */
-export function validateJsonBody(
-  body: unknown,
-  schema?: JSONSchema | null
-): SchemaValidationResult {
-  if (!schema || !isPlainObject(schema)) {
-    return { valid: true, errors: [], skipped: true }
-  }
-  const errors: SchemaValidationError[] = []
-  validateNode(body, schema, '', errors)
-  return { valid: errors.length === 0, errors, skipped: false }
-}
-
-class ProxyPayAPI {
-  private client: AxiosInstance
-  private authToken: string | null = null
-
-  constructor(baseURL = '/api') {
-    this.client = axios.create({
-      baseURL,
-      withCredentials: true,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    })
-
-    const token = localStorage.getItem('auth_token')
-    if (token) {
-      this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`
-    }
-
-    const requestStartedAt = new WeakMap<object, number>()
-    const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
-    const recordResponseTime = (config?: object & { url?: string; method?: string }) => {
-      if (!config) return
-      const startedAt = requestStartedAt.get(config)
-      if (startedAt === undefined) return
-      requestStartedAt.delete(config)
-      recordPerformanceMetric({
-        url: config.url ?? '',
-        method: (config.method ?? 'get').toUpperCase(),
-        durationMs: now() - startedAt,
-      })
-    }
-
-    this.client.interceptors.request.use((config) => {
-      requestStartedAt.set(config, now())
-      return config
-    })
-
-    this.client.interceptors.response.use(
-      (response) => {
-        recordResponseTime(response.config)
-        return response
-      },
-      (error) => {
-        recordResponseTime(error?.config)
-        return Promise.reject(error)
-      }
-    )
-  }
-
-  setAuthToken(token: string | null) {
-    this.authToken = token
-    if (token) {
-      this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`
-    } else {
-      delete this.client.defaults.headers.common['Authorization']
-    }
-  }
-
-  getClient(): AxiosInstance {
-    return this.client
-  }
-}
-
-export const api = new ProxyPayAPI()
-export default api
