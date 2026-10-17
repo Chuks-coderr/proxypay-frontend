@@ -10,6 +10,7 @@ import Layout from '@theme/Layout';
 import { FeatureFlagProvider, useFeatureFlag } from '@site/src/featureFlags';
 import { FeatureFlagSettings } from '@site/src/components/FeatureFlagSettings';
 import { FeatureFlagDebugPanel } from '@site/src/components/FeatureFlagDebugPanel';
+import DataRetentionPolicy from '@site/src/components/DataRetentionPolicy';
 
 export default function SettingsPage(): React.JSX.Element {
   // In a real app this would come from an auth context / session
@@ -31,6 +32,7 @@ export default function SettingsPage(): React.JSX.Element {
         <FeatureFlagSettings />
         <DebugPanelGate />
       </FeatureFlagProvider>
+      <DataRetentionPolicy />
     </Layout>
   );
 }
