@@ -67,5 +67,5 @@ this file or configuring an equivalent edge/CDN policy.
 
 ## Handsoff notes
 
-<!-- handsoff-issue-712 -->
-- #712: Mark required parameters in the endpoint form
+<!-- handsoff-issue-709 -->
+- #709: Add schema navigation from operation details

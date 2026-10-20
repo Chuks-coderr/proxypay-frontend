@@ -169,28 +169,135 @@ export interface DashboardNotification {
 }
 
 /**
- * Tracks the latest in-flight request per key so that stale (superseded)
- * responses can be discarded instead of overwriting newer results (#720).
+ * A single OpenAPI validation problem tied to a specific location in the
+ * document via a JSON Pointer (RFC 6901) path (#710).
  */
-export class LatestRequestTracker {
-  private latest = new Map<string, number>()
-  private counter = 0
+export interface ValidationIssue {
+  /** JSON Pointer path, e.g. `/paths/~1transactions~1{id}/get/parameters/0` */
+  path: string
+  /** Human-readable description of the problem */
+  message: string
+  /** Optional severity so callers can distinguish warnings from errors */
+  severity?: 'error' | 'warning'
+  /** Optional keyword that triggered the failure (e.g. `required`, `type`) */
+  keyword?: string
+}
 
-  /** Begin a new request for `key`; returns a token identifying this request. */
-  begin(key: string): number {
-    const token = ++this.counter
-    this.latest.set(key, token)
-    return token
+/**
+ * Structured result of validating an OpenAPI document (#710).
+ * `valid` is true only when there are no error-severity issues.
+ */
+export interface ValidationResult {
+  valid: boolean
+  /** Concise one-line summary suitable for a banner */
+  summary: string
+  /** Individual issues with field-level JSON Pointer context */
+  issues: ValidationIssue[]
+}
+
+/**
+ * Escape a single JSON Pointer reference token per RFC 6901.
+ */
+function escapePointerToken(token: string): string {
+  return token.replace(/~/g, '~0').replace(/\//g, '~1')
+}
+
+/**
+ * Build a JSON Pointer from a sequence of path segments.
+ */
+export function toJsonPointer(segments: Array<string | number>): string {
+  if (segments.length === 0) return ''
+  return '/' + segments.map((s) => escapePointerToken(String(s))).join('/')
+}
+
+/**
+ * Normalize a raw validation error (from a validator or API response) into a
+ * structured {@link ValidationIssue} with a JSON Pointer path (#710).
+ */
+export function normalizeValidationIssue(raw: unknown): ValidationIssue {
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>
+    const segments = Array.isArray(obj.path)
+      ? (obj.path as Array<string | number>)
+      : typeof obj.instancePath === 'string'
+        ? obj.instancePath.split('/').filter((s) => s.length > 0)
+        : typeof obj.path === 'string'
+          ? obj.path.split('/').filter((s) => s.length > 0)
+          : []
+    const message =
+      typeof obj.message === 'string' && obj.message.length > 0
+        ? obj.message
+        : 'Validation failed'
+    const issue: ValidationIssue = {
+      path: toJsonPointer(segments),
+      message,
+    }
+    if (obj.severity === 'warning' || obj.severity === 'error') {
+      issue.severity = obj.severity
+    }
+    if (typeof obj.keyword === 'string') {
+      issue.keyword = obj.keyword
+    }
+    return issue
   }
+  return { path: '', message: String(raw ?? 'Validation failed') }
+}
 
-  /** True when `token` is still the most recent request for `key`. */
-  isLatest(key: string, token: number): boolean {
-    return this.latest.get(key) === token
+/**
+ * Build a concise summary line for a set of validation issues (#710).
+ */
+export function summarizeValidationIssues(issues: ValidationIssue[]): string {
+  const errorCount = issues.filter((i) => i.severity !== 'warning').length
+  if (issues.length === 0) return 'Document is valid'
+  if (errorCount === 0) {
+    return `${issues.length} validation warning${issues.length === 1 ? '' : 's'}`
   }
+  return `${errorCount} validation error${errorCount === 1 ? '' : 's'}`
+}
 
-  /** Forget the tracked request for `key` (e.g. on unmount). */
-  clear(key: string): void {
-    this.latest.delete(key)
+/**
+ * Parse a validation response payload into a structured {@link ValidationResult}.
+ * Falls back to a general failure message when the payload cannot be parsed (#710).
+ */
+export function parseValidationResult(payload: unknown): ValidationResult {
+  try {
+    if (payload && typeof payload === 'object') {
+      const obj = payload as Record<string, unknown>
+      const rawIssues = Array.isArray(obj.issues)
+        ? obj.issues
+        : Array.isArray(obj.errors)
+          ? obj.errors
+          : null
+      if (rawIssues) {
+        const issues = rawIssues.map(normalizeValidationIssue)
+        const valid =
+          typeof obj.valid === 'boolean'
+            ? obj.valid
+            : !issues.some((i) => i.severity !== 'warning')
+        return {
+          valid,
+          summary:
+            typeof obj.summary === 'string' && obj.summary.length > 0
+              ? obj.summary
+              : summarizeValidationIssues(issues),
+          issues,
+        }
+      }
+      if (typeof obj.message === 'string' && obj.message.length > 0) {
+        return {
+          valid: false,
+          summary: obj.message,
+          issues: [{ path: '', message: obj.message }],
+        }
+      }
+    }
+  } catch {
+    // fall through to safe fallback below
+  }
+  return {
+    valid: false,
+    summary: 'Validation failed: unable to parse validation details',
+    issues: [],
   }
 }
 
@@ -366,59 +473,6 @@ export function selectBodyEditor(mediaType: string): BodyEditorSelection {
     id: string,
     schedule: Partial<CreateExportSchedule>
   ): Promise<ExportSchedule> {
-    const { data } = await this.client.put(
-      `/transactions/exports/schedules/${encodeURIComponent(id)}`,
-      schedule
-    )
-    return this.unwrap<ExportSchedule>(data)
-  }
-  return {
-    kind: 'unsupported',
-    mediaType,
-    unsupported: true,
-    reason: `No editor available for media type "${mediaType}"`,
-  }
-}
+    const { data } = await this.cl
 
-  async getExportNotifications(): Promise<ExportCompletionNotification[]> {
-    const { data } = await this.client.get('/transactions/exports/notifications')
-    return this.unwrap<ExportCompletionNotification[]>(data) || []
-  }
-
-  async getNotificationConfig(): Promise<NotificationConfig> {
-    const { data } = await this.client.get('/transactions/exports/notifications/config')
-    return this.unwrap<NotificationConfig>(data)
-  }
-
-  async updateNotificationConfig(
-    config: NotificationConfig
-  ): Promise<NotificationConfig> {
-    const { data } = await this.client.put(
-      '/transactions/exports/notifications/config',
-      config
-    )
-    return this.unwrap<NotificationConfig>(data)
-  }
-}
-
-  async getScheduledExports(): Promise<ScheduledExport[]> {
-    const { data } = await this.client.get('/transactions/exports/scheduled')
-    return this.unwrap<ScheduledExport[]>(data) || []
-  }
-
-  async getDashboardNotifications(): Promise<DashboardNotification[]> {
-    const { data } = await this.client.get('/notifications')
-    return this.unwrap<DashboardNotification[]>(data) || []
-  }
-
-  async markNotificationRead(id: string): Promise<void> {
-    await this.client.post(`/notifications/${encodeURIComponent(id)}/read`)
-  }
-}
-
-export interface ApiPayload<T> {
-  data: T
-}
-
-export const api = new ProxyPayAPI()
-export default api
+/* … truncated 1863 chars — edit only what you need near the top … */
