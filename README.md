@@ -67,8 +67,5 @@ this file or configuring an equivalent edge/CDN policy.
 
 ## Handsoff notes
 
-<!-- handsoff-issue-704 -->
-- #704: Show operation-level server selection
-
-<!-- handsoff-issue-705 -->
-- #705: Document authentication schemes beside affected operations
+<!-- handsoff-issue-712 -->
+- #712: Mark required parameters in the endpoint form

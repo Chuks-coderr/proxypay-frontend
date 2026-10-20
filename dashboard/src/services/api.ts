@@ -168,349 +168,295 @@ export interface DashboardNotification {
   actionUrl?: string
 }
 
-export type ApiErrorKind = 'cancelled' | 'timeout' | 'network' | 'server' | 'client' | 'unknown'
+/**
+ * OpenAPI parameter serialization styles (#713).
+ * See https://swagger.io/docs/specification/serialization/
+ */
+export type ParameterStyle =
+  | 'form'
+  | 'simple'
+  | 'spaceDelimited'
+  | 'pipeDelimited'
+  | 'deepObject'
 
-export class ApiError extends Error {
-  readonly kind: ApiErrorKind
-  readonly status?: number
-  readonly original?: unknown
+export type ParameterLocation = 'query' | 'path' | 'header' | 'cookie'
 
-  constructor(kind: ApiErrorKind, message: string, status?: number, original?: unknown) {
-    super(message)
-    this.name = 'ApiError'
-    this.kind = kind
-    this.status = status
-    this.original = original
-  }
-
-  get isCancelled(): boolean {
-    return this.kind === 'cancelled'
-  }
-
-  get isTimeout(): boolean {
-    return this.kind === 'timeout'
-  }
-
-  get isNetwork(): boolean {
-    return this.kind === 'network'
-  }
-
-  get isServer(): boolean {
-    return this.kind === 'server'
-  }
+export interface ParameterSerializationOptions {
+  style?: ParameterStyle
+  explode?: boolean
+  location?: ParameterLocation
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000
+type Primitive = string | number | boolean
 
-export interface RequestOptions {
-  signal?: AbortSignal
-  timeoutMs?: number
-}
+const encode = (value: Primitive): string => encodeURIComponent(String(value))
 
-function toApiError(error: unknown): ApiError {
-  if (error instanceof ApiError) return error
-  if (axios.isCancel(error)) {
-    return new ApiError('cancelled', 'Request was cancelled', undefined, error)
-  }
-  const axiosError = error as AxiosError | undefined
-  if (axiosError && axiosError.code === 'ECONNABORTED') {
-    return new ApiError('timeout', 'Request timed out', undefined, error)
-  }
-  if (axiosError && axiosError.response) {
-    const status = axiosError.response.status
-    const kind: ApiErrorKind = status >= 500 ? 'server' : 'client'
-    return new ApiError(kind, axiosError.message || `Request failed (${status})`, status, error)
-  }
-  if (axiosError && axiosError.request) {
-    return new ApiError('network', 'Network error — unable to reach server', undefined, error)
-  }
-  return new ApiError('unknown', (error as Error)?.message || 'Unknown error', undefined, error)
-}
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
 
-class ProxyPayAPI {
-  private client: AxiosInstance
-  private authToken: string | null = null
-  private inFlight = new Map<string, AbortController>()
+const defaultStyle = (location: ParameterLocation): ParameterStyle =>
+  location === 'path' || location === 'header' ? 'simple' : 'form'
 
-  constructor(baseURL = resolveBaseUrl('/api')) {
-    this.client = axios.create({
-      baseURL: resolvedBase,
-      withCredentials: true,
-      timeout: DEFAULT_TIMEOUT_MS,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    })
+const defaultExplode = (style: ParameterStyle): boolean => style === 'form'
 
-    const token = typeof localStorage !== 'undefined'
-      ? localStorage.getItem('auth_token')
-      : null
-    if (token) {
-      this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`
+/**
+ * Serialize a single parameter value according to its OpenAPI style/explode
+ * metadata. Returns the encoded query-string fragment (without a leading `?`).
+ * For path/header/cookie locations the raw (unencoded) value is returned so
+ * callers can encode it in the appropriate context.
+ */
+export function serializeParameter(
+  name: string,
+  value: unknown,
+  options: ParameterSerializationOptions = {}
+): string {
+  const location = options.location ?? 'query'
+  const style = options.style ?? defaultStyle(location)
+  const explode = options.explode ?? defaultExplode(style)
+  const encodedName = encodeURIComponent(name)
+
+  if (value === undefined || value === null) return ''
+
+  if (Array.isArray(value)) {
+    const items = value.map((item) => encode(item as Primitive))
+    if (style === 'spaceDelimited') {
+      return `${encodedName}=${items.join('%20')}`
     }
+    if (style === 'pipeDelimited') {
+      return `${encodedName}=${items.join('|')}`
+    }
+    if (style === 'simple') {
+      return items.join(',')
+    }
+    // form (default for query/cookie)
+    if (explode) {
+      return items.map((item) => `${encodedName}=${item}`).join('&')
+    }
+    return `${encodedName}=${items.join(',')}`
+  }
 
-    // ── Subscribe to base-URL changes so the client stays in sync (#598) ─────
-    useApiConfigStore.subscribe((state) => {
-      const newBase = state.getEffectiveBaseUrl()
-      if (this.client.defaults.baseURL !== newBase) {
-        this.client.defaults.baseURL = newBase
-      }
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value).filter(
+      ([, v]) => v !== undefined && v !== null
+    )
+    if (style === 'deepObject') {
+      return entries
+        .map(([k, v]) => `${encodedName}%5B${encodeURIComponent(k)}%5D=${encode(v as Primitive)}`)
+        .join('&')
+    }
+    if (style === 'simple') {
+      return entries.map(([k, v]) => `${encodeURIComponent(k)},${encode(v as Primitive)}`).join(',')
+    }
+    // form
+    if (explode) {
+      return entries
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encode(v as Primitive)}`)
+        .join('&')
+    }
+    const flat = entries
+      .map(([k, v]) => `${encodeURIComponent(k)},${encode(v as Primitive)}`)
+      .join(',')
+    return `${encodedName}=${flat}`
+  }
+
+  return `${encodedName}=${encode(value as Primitive)}`
+}
+
+/**
+ * Serialize a set of parameters into a query string using each parameter's
+ * style/explode metadata. Returns a string without a leading `?`.
+ */
+export function serializeQueryParameters(
+  params: Record<string, unknown>,
+  metadata: Record<string, ParameterSerializationOptions> = {}
+): string {
+  const parts: string[] = []
+  for (const [name, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue
+    const fragment = serializeParameter(name, value, {
+      location: 'query',
+      ...metadata[name],
     })
+    if (fragment) parts.push(fragment)
+  }
+  return parts.join('&')
+}
 
-    const requestStartedAt = new WeakMap<object, number>()
-    // Maps config → interceptor log entry id (#597)
-    const requestLogId = new WeakMap<object, string>()
-    const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+/**
+ * Request body media-type editors (#715).
+ *
+ * Operations may declare one or more request body media types. The workbench
+ * picks a matching editor and constructs the appropriate `BodyInit`:
+ *  - `application/json` (and `+json`) → JSON editor → string body
+ *  - `multipart/form-data` → key/value editor → `FormData`
+ *  - `application/x-www-form-urlencoded` → key/value editor → `URLSearchParams`
+ *  - binary (`application/octet-stream`, `image/*`, etc.) → file editor → `Blob`
+ *  - `text/*` → plain text editor → string body
+ *
+ * Unsupported media types are surfaced explicitly so callers never silently
+ * send malformed data.
+ */
+export type BodyEditorKind = 'json' | 'form' | 'urlencoded' | 'binary' | 'text' | 'unsupported'
 
-    // ── Request interceptor: timing + logging (#597) ──────────────────────────
-    this.client.interceptors.request.use((config) => {
-      const startMs = now()
-      requestStartedAt.set(config, startMs)
+export interface BodyEditorSelection {
+  kind: BodyEditorKind
+  /** The media type the editor was selected for */
+  mediaType: string
+  /** True when the media type is not supported by any editor */
+  unsupported: boolean
+  /** Human-readable reason when unsupported */
+  reason?: string
+}
 
-      // #597 — log the outgoing request
-      const logStore = useInterceptorLogStore.getState()
-      const rawHeaders = config.headers
-        ? Object.fromEntries(
-            Object.entries(config.headers).filter(
-              ([, v]) => v !== undefined && v !== null,
-            ) as [string, string][],
-          )
-        : {}
-      const logId = logStore.addRequest(
-        config.method ?? 'get',
-        config.url ?? '',
-        (config.params as Record<string, unknown>) ?? {},
-        rawHeaders,
+const isJsonMediaType = (mediaType: string): boolean => {
+  const base = mediaType.split(';')[0].trim().toLowerCase()
+  return base === 'application/json' || base.endsWith('+json')
+}
+
+const isBinaryMediaType = (mediaType: string): boolean => {
+  const base = mediaType.split(';')[0].trim().toLowerCase()
+  if (base === 'application/octet-stream') return true
+  if (base.startsWith('image/')) return true
+  if (base.startsWith('audio/')) return true
+  if (base.startsWith('video/')) return true
+  if (base === 'application/pdf') return true
+  if (base === 'application/zip') return true
+  return false
+}
+
+/**
+ * Choose the editor kind for a single declared media type.
+ */
+export function selectBodyEditor(mediaType: string): BodyEditorSelection {
+  const base = mediaType.split(';')[0].trim().toLowerCase()
+  if (isJsonMediaType(base)) {
+    return { kind: 'json', mediaType, unsupported: false }
+  }
+  if (base === 'multipart/form-data') {
+    return { kind: 'form', mediaType, unsupported: false }
+  }
+  if (base === 'application/x-www-form-urlencoded') {
+    return { kind: 'urlencoded', mediaType, unsupported: false }
+  }
+  if (isBinaryMediaType(base)) {
+    return { kind: 'binary', mediaType, unsupported: false }
+  }
+  if (base.startsWith('text/')) {
+    return { kind: 'text', mediaType, unsupported: false }
+  }
+  return {
+    kind: 'unsupported',
+    mediaType,
+    unsupported: true,
+    reason: `No editor available for media type "${mediaType}"`,
+  }
+}
+
+/**
+ * Pick the best editor from an operation's declared media types. JSON is
+ * preferred when present, otherwise the first supported media type is used.
+ * Returns `undefined` when no media types are declared.
+ */
+export function selectBodyEditorForMediaTypes(
+  mediaTypes: string[] | undefined
+): BodyEditorSelection | undefined {
+  if (!mediaTypes || mediaTypes.length === 0) return undefined
+  const selections = mediaTypes.map(selectBodyEditor)
+  const json = selections.find((s) => s.kind === 'json')
+  if (json) return json
+  const supported = selections.find((s) => !s.unsupported)
+  if (supported) return supported
+  return selections[0]
+}
+
+export interface FormFieldEntry {
+  key: string
+  value: string
+  /** Optional file for multipart fields */
+  file?: File | Blob
+}
+
+/**
+ * Construct the `BodyInit` for a given editor selection.
+ *
+ * Throws when the media type is unsupported so callers can surface the error
+ * instead of sending malformed data.
+ */
+export function buildBodyInit(
+  selection: BodyEditorSelection,
+  input: {
+    json?: string
+    text?: string
+    fields?: FormFieldEntry[]
+    file?: Blob | File | null
+  }
+): BodyInit {
+  switch (selection.kind) {
+    case 'json':
+      return input.json ?? ''
+    case 'text':
+      return input.text ?? ''
+    case 'form': {
+      const formData = new FormData()
+      for (const field of input.fields ?? []) {
+        if (!field.key) continue
+        if (field.file) {
+          formData.append(field.key, field.file)
+        } else {
+          formData.append(field.key, field.value)
+        }
+      }
+      return formData
+    }
+    case 'urlencoded': {
+      const params = new URLSearchParams()
+      for (const field of input.fields ?? []) {
+        if (!field.key) continue
+        params.append(field.key, field.value)
+      }
+      return params
+    }
+    case 'binary': {
+      if (!input.file) {
+        throw new Error(`A file is required for media type "${selection.mediaType}"`)
+      }
+      return input.file
+    }
+    case 'unsupported':
+    default:
+      throw new Error(
+        selection.reason ?? `Unsupported media type "${selection.mediaType}"`
       )
-      requestLogId.set(config, logId)
-
-      return config
-    })
-
-    // ── Response interceptor: timing + logging (#597) ─────────────────────────
-    this.client.interceptors.response.use(
-      (response) => {
-        const startMs = requestStartedAt.get(response.config)
-        const durationMs = startMs !== undefined ? now() - startMs : 0
-        requestStartedAt.delete(response.config)
-
-        recordPerformanceMetric('api-response', durationMs, {
-          endpoint: response.config.url || 'unknown',
-          method: (response.config.method || 'get').toUpperCase(),
-        })
-
-        // #597 — resolve the log entry
-        const logId = requestLogId.get(response.config)
-        if (logId) {
-          const responseHeaders: Record<string, string> = {}
-          if (response.headers) {
-            Object.entries(response.headers).forEach(([k, v]) => {
-              if (typeof v === 'string') responseHeaders[k] = v
-            })
-          }
-          useInterceptorLogStore
-            .getState()
-            .resolveRequest(logId, response.status, responseHeaders, durationMs)
-          requestLogId.delete(response.config)
-        }
-
-        return response
-      },
-      (error: unknown) => {
-        const axiosError = error as {
-          config?: AxiosRequestConfig & object
-          response?: { status?: number; headers?: Record<string, string> }
-          message?: string
-        }
-
-        if (axiosError.config) {
-          const startMs = requestStartedAt.get(axiosError.config)
-          const durationMs = startMs !== undefined ? now() - startMs : 0
-          requestStartedAt.delete(axiosError.config)
-
-          recordPerformanceMetric('api-response', durationMs, {
-            endpoint: axiosError.config.url || 'unknown',
-            method: (axiosError.config.method || 'get').toUpperCase(),
-          })
-
-          // #597 — reject the log entry
-          const logId = requestLogId.get(axiosError.config)
-          if (logId) {
-            useInterceptorLogStore.getState().rejectRequest(
-              logId,
-              axiosError.message ?? 'Request failed',
-              durationMs,
-              axiosError.response?.status,
-            )
-            requestLogId.delete(axiosError.config)
-          }
-        }
-        return Promise.reject(toApiError(error))
-      }
-    )
-  }
-
-  /**
-   * Register an in-flight request so it can be cancelled by key.
-   * Returns the AbortSignal to pass to the request config.
-   */
-  private trackRequest(key: string, externalSignal?: AbortSignal): AbortSignal {
-    const controller = new AbortController()
-    this.inFlight.set(key, controller)
-    if (externalSignal) {
-      if (externalSignal.aborted) {
-        controller.abort()
-      } else {
-        externalSignal.addEventListener('abort', () => controller.abort(), { once: true })
-      }
-    }
-    return controller.signal
-  }
-
-  private releaseRequest(key: string): void {
-    this.inFlight.delete(key)
-  }
-
-  /** Cancel a specific in-flight request by key. */
-  cancelRequest(key: string): void {
-    const controller = this.inFlight.get(key)
-    if (controller) {
-      controller.abort()
-      this.inFlight.delete(key)
-    }
-  }
-
-  /** Cancel all in-flight requests. */
-  cancelAllRequests(): void {
-    this.inFlight.forEach((controller) => controller.abort())
-    this.inFlight.clear()
-  }
-
-  private unwrap<T>(payload: ApiPayload<T>): T {
-    if (payload && typeof payload === 'object' && 'data' in payload) {
-      return payload.data
-    }
-    return payload as T
-  }
-
-  async getTransactions(
-    filters: TransactionFilters,
-    options: RequestOptions = {}
-  ): Promise<{
-    data: Transaction[]
-    total: number
-  }> {
-    const key = 'getTransactions'
-    const signal = this.trackRequest(key, options.signal)
-    try {
-      const { data } = await this.client.get('/transactions', {
-        params: filters,
-        signal,
-        timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      })
-      return data
-    } finally {
-      this.releaseRequest(key)
-    }
-  }
-
-  async getTransactionDetail(id: string, options: RequestOptions = {}): Promise<Transaction> {
-    const key = `getTransactionDetail:${id}`
-    const signal = this.trackRequest(key, options.signal)
-    try {
-      const { data } = await this.client.get(`/transactions/${encodeURIComponent(id)}`, {
-        signal,
-        timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      })
-      return this.unwrap<Transaction>(data)
-    } finally {
-      this.releaseRequest(key)
-    }
-  }
-
-  async getStatusHistory(id: string): Promise<StatusTransition[]> {
-    const { data } = await this.client.get(
-      `/transactions/${encodeURIComponent(id)}/status-history`
-    )
-    return this.unwrap<StatusTransition[]>(data) || []
-  }
-
-  async getDuplicateTransactions(
-    filters?: TransactionFilters
-  ): Promise<DuplicateTransactionGroup[]> {
-    const { data } = await this.client.get('/transactions/duplicates', {
-      params: filters,
-    })
-    return this.unwrap<DuplicateTransactionGroup[]>(data) || []
-  }
-
-  getDuplicateCandidates(
-    filters?: TransactionFilters
-  ): Promise<DuplicateTransactionGroup[]> {
-    return this.getDuplicateTransactions(filters)
-  }
-
-  async markTransactionsAsDuplicates(
-    request: DuplicateMarkRequest
-  ): Promise<DuplicateTransactionGroup | DuplicateTransactionGroup[]> {
-    const { data } = await this.client.post('/transactions/duplicates/mark', request)
-    return this.unwrap<DuplicateTransactionGroup | DuplicateTransactionGroup[]>(data)
-  }
-
-  markDuplicateTransactions(
-    request: DuplicateMarkRequest
-  ): Promise<DuplicateTransactionGroup | DuplicateTransactionGroup[]> {
-    return this.markTransactionsAsDuplicates(request)
-  }
-
-  async mergeTransactions(
-    canonicalId: string,
-    duplicateIds: string[],
-    metadata?: Pick<MergeTransactionsRequest, 'actor' | 'reason'>
-  ): Promise<Transaction> {
-    const { data } = await this.client.post('/transactions/merge', {
-      canonicalId,
-      duplicateIds,
-      ...metadata,
-    })
-    return this.unwrap<Transaction>(data)
-  }
-
-  mergeDuplicateTransactions(
-    canonicalId: string,
-    duplicateIds: string[]
-  ): Promise<Transaction> {
-    return this.mergeTransactions(canonicalId, duplicateIds)
-  }
-
-  async getExportSchedules(): Promise<ExportSchedule[]> {
-    const { data } = await this.client.get('/transactions/exports/schedules')
-    return this.unwrap<ExportSchedule[]>(data) || []
-  }
-
-  async createExportSchedule(
-    schedule: CreateExportSchedule
-  ): Promise<ExportSchedule> {
-    const { data } = await this.client.post(
-      '/transactions/exports/schedules',
-      schedule
-    )
-    return this.unwrap<ExportSchedule>(data)
-  }
-
-  async updateExportSchedule(
-    id: string,
-    schedule: Partial<CreateExportSchedule>
-  ): Promise<ExportSchedule> {
-    const { data } = await this.client.put(
-      `/transactions/exports/schedules/${encodeURIComponent(id)}`,
-      schedule
-    )
-    return this.unwrap<ExportSchedule>(data)
   }
 }
 
-type ApiPayload<T> = T | { data: T }
+/**
+ * JSON Schema validation for request bodies (#714).
+ *
+ * Client-side validation is opt-in: callers pass the operation's declared
+ * schema and receive actionable errors before sending. When a schema cannot
+ * be resolved (undefined/null) validation is skipped and the server remains
+ * authoritative.
+ */
+export interface SchemaValidationError {
+  /** JSON Pointer to the offending value, e.g. `/user/email` */
+  path: string
+  /** Human-readable, actionable message */
+  message: string
+}
 
-export const api = new ProxyPayAPI()
-export default api
+export interface SchemaValidationResult {
+  valid: boolean
+  errors: SchemaValidationError[]
+  /** True when no schema was supplied and validation was skipped */
+  skipped: boolean
+}
+
+type JSONSchema = Record<string, unknown>
+
+const typeOf = (value: unknown): string => {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  if (typeof value === 'object') return 'object'
+  return typeof value
+}
