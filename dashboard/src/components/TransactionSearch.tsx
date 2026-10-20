@@ -120,10 +120,105 @@ const TransactionSearch: React.FC<TransactionSearchProps> = ({ onSelect }) => {
   const history = useHistory();
   const location = useLocation();
 
-  const params = useMemo(() => new URLSearchParams(location.search), [location.search]);
-  const searchQuery = params.get(SEARCH_PARAM) ?? '';
-  const selectedOperationId = params.get(OPERATION_PARAM);
-  const showDeprecated = params.get(DEPRECATED_PARAM) === 'true';
+// ── Portal page route index ───────────────────────────────────────────────────
+
+export type PageCategory = 'Guides' | 'Dashboards' | 'Settings'
+
+export interface PortalPage {
+  title: string
+  description: string
+  path: string
+  category: PageCategory
+  keywords?: string[]
+}
+
+/**
+ * Route index built from the portal's page metadata. Used by the
+ * portal-wide search dialog to surface guides, dashboards, and settings.
+ */
+export const PORTAL_PAGES: PortalPage[] = [
+  {
+    title: 'Getting Started',
+    description: 'Install the SDK and send your first request.',
+    path: '/docs/getting-started',
+    category: 'Guides',
+    keywords: ['install', 'quickstart', 'setup'],
+  },
+  {
+    title: 'Authentication',
+    description: 'API keys, signing, and request authentication.',
+    path: '/docs/authentication',
+    category: 'Guides',
+    keywords: ['api key', 'token', 'auth'],
+  },
+  {
+    title: 'Endpoint Reference',
+    description: 'Browse every available API endpoint.',
+    path: '/docs/reference',
+    category: 'Guides',
+    keywords: ['api', 'endpoints', 'reference'],
+  },
+  {
+    title: 'Transactions Dashboard',
+    description: 'View and filter recent transactions.',
+    path: '/dashboard/transactions',
+    category: 'Dashboards',
+    keywords: ['payments', 'history', 'activity'],
+  },
+  {
+    title: 'Analytics Overview',
+    description: 'Volume, success rate, and provider breakdown.',
+    path: '/dashboard/analytics',
+    category: 'Dashboards',
+    keywords: ['metrics', 'charts', 'stats'],
+  },
+  {
+    title: 'Account Settings',
+    description: 'Manage profile, team, and billing details.',
+    path: '/settings/account',
+    category: 'Settings',
+    keywords: ['profile', 'team', 'billing'],
+  },
+  {
+    title: 'API Keys',
+    description: 'Create and revoke API keys.',
+    path: '/settings/api-keys',
+    category: 'Settings',
+    keywords: ['keys', 'secrets', 'tokens'],
+  },
+]
+
+/**
+ * Returns portal pages matching the query against title, description,
+ * and keywords (case-insensitive). Empty query returns all pages.
+ */
+export function searchPortalPages(query: string): PortalPage[] {
+  const q = query.toLowerCase().trim()
+  if (!q) return PORTAL_PAGES
+  return PORTAL_PAGES.filter((page) => {
+    const haystack = [page.title, page.description, ...(page.keywords ?? [])]
+      .join(' ')
+      .toLowerCase()
+    return haystack.includes(q)
+  })
+}
+
+/**
+ * Groups portal pages by category, preserving category order.
+ */
+export function groupPortalPages(
+  pages: PortalPage[]
+): Array<{ category: PageCategory; pages: PortalPage[] }> {
+  const order: PageCategory[] = ['Guides', 'Dashboards', 'Settings']
+  return order
+    .map((category) => ({
+      category,
+      pages: pages.filter((p) => p.category === category),
+    }))
+    .filter((group) => group.pages.length > 0)
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
   const [inputValue, setInputValue] = useState(searchQuery);
   const [revealHidden, setRevealHidden] = useState(false);
@@ -281,7 +376,186 @@ const TransactionSearch: React.FC<TransactionSearchProps> = ({ onSelect }) => {
         </ul>
       )}
     </div>
-  );
-};
+  )
+}
 
-export default TransactionSearch;
+// ── Portal-wide search dialog ─────────────────────────────────────────────────
+
+interface PortalSearchDialogProps {
+  open: boolean
+  onClose: () => void
+  /** Optional navigation handler; defaults to window.location assignment */
+  onNavigate?: (path: string) => void
+}
+
+export const PortalSearchDialog: React.FC<PortalSearchDialogProps> = ({
+  open,
+  onClose,
+  onNavigate,
+}) => {
+  const [query, setQuery] = useState('')
+  const [activeIndex, setActiveIndex] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const results = searchPortalPages(query)
+  const groups = groupPortalPages(results)
+  const flatResults = groups.flatMap((g) => g.pages)
+
+  // Reset state and focus input when the dialog opens
+  useEffect(() => {
+    if (open) {
+      setQuery('')
+      setActiveIndex(0)
+      inputRef.current?.focus()
+    }
+  }, [open])
+
+  // Clamp active index when results change
+  useEffect(() => {
+    setActiveIndex((prev) =>
+      flatResults.length === 0 ? 0 : Math.min(prev, flatResults.length - 1)
+    )
+  }, [flatResults.length])
+
+  const navigate = useCallback(
+    (path: string) => {
+      if (onNavigate) {
+        onNavigate(path)
+      } else if (typeof window !== 'undefined') {
+        window.location.assign(path)
+      }
+      onClose()
+    },
+    [onNavigate, onClose]
+  )
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      onClose()
+      return
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setActiveIndex((prev) =>
+        flatResults.length === 0 ? 0 : (prev + 1) % flatResults.length
+      )
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setActiveIndex((prev) =>
+        flatResults.length === 0
+          ? 0
+          : (prev - 1 + flatResults.length) % flatResults.length
+      )
+      return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const target = flatResults[activeIndex]
+      if (target) navigate(target.path)
+    }
+  }
+
+  if (!open) return null
+
+  let runningIndex = -1
+
+  return (
+    <div
+      className="portal-search-overlay"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        className="portal-search-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search portal pages"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="search-input-wrapper">
+          <Search size={16} className="search-icon" aria-hidden="true" />
+          <input
+            ref={inputRef}
+            type="search"
+            className="search-input"
+            placeholder="Search guides, dashboards, settings…"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setActiveIndex(0)
+            }}
+            onKeyDown={handleKeyDown}
+            aria-label="Search portal pages"
+            aria-controls="portal-search-results"
+            aria-activedescendant={
+              flatResults[activeIndex]
+                ? `portal-search-result-${activeIndex}`
+                : undefined
+            }
+            autoComplete="off"
+          />
+          <button
+            className="search-clear"
+            onClick={onClose}
+            aria-label="Close search"
+            type="button"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        <div
+          className="portal-search-results"
+          id="portal-search-results"
+          role="listbox"
+          aria-label="Portal search results"
+        >
+          {flatResults.length === 0 && (
+            <p className="portal-search-empty" role="status">
+              No pages match “{query}”.
+            </p>
+          )}
+          {groups.map((group) => (
+            <div key={group.category} className="portal-search-group">
+              <div className="portal-search-group-heading" role="presentation">
+                {group.category}
+              </div>
+              {group.pages.map((page) => {
+                runningIndex += 1
+                const index = runningIndex
+                const isActive = index === activeIndex
+                return (
+                  <a
+                    key={page.path}
+                    id={`portal-search-result-${index}`}
+                    href={page.path}
+                    className={`portal-search-result${
+                      isActive ? ' is-active' : ''
+                    }`}
+                    role="option"
+                    aria-selected={isActive}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onClick={(e) => {
+                      e.preventDefault()
+                      navigate(page.path)
+                    }}
+                  >
+                    <span className="portal-search-result-title">
+                      <HighlightMatch text={page.title} query={query} />
+                    </span>
+                    <span className="portal-search-result-description">
+                      {page.description}
+                    </span>
+                  </a>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
