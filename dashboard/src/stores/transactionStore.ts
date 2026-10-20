@@ -6,6 +6,7 @@ interface TransactionStore {
   transactions: Transaction[]
   selectedTransaction: Transaction | null
   loading: boolean
+  retrying: boolean
   detailLoading: boolean
   error: string | null
   detailError: string | null
@@ -14,6 +15,7 @@ interface TransactionStore {
   
   // Actions
   fetchTransactions: (filters: TransactionFilters) => Promise<void>
+  retryTransactions: () => Promise<void>
   fetchTransactionDetail: (id: string) => Promise<void>
   setSelectedTransaction: (tx: Transaction | null) => void
   setFilters: (filters: Partial<TransactionFilters>) => void
@@ -26,13 +28,23 @@ const defaultFilters: TransactionFilters = {
   offset: 0,
 }
 
+// Filter keys that, when changed, invalidate the current pagination offset.
+const paginationResetKeys: (keyof TransactionFilters)[] = [
+  'search',
+  'status',
+  'startDate',
+  'endDate',
+  'provider',
+]
+
 let latestDetailRequest = 0
 let latestListRequest = 0
 
-export const useTransactionStore = create<TransactionStore>((set) => ({
+export const useTransactionStore = create<TransactionStore>((set, get) => ({
   transactions: [],
   selectedTransaction: null,
   loading: false,
+  retrying: false,
   detailLoading: false,
   error: null,
   detailError: null,
@@ -41,7 +53,7 @@ export const useTransactionStore = create<TransactionStore>((set) => ({
 
   fetchTransactions: async (filters: TransactionFilters) => {
     const requestId = ++latestListRequest
-    set({ loading: true, error: null })
+    set({ loading: true, retrying: false, error: null })
     try {
       const result = await proxyPayAPI.getTransactions(filters)
       if (requestId !== latestListRequest) return
@@ -71,6 +83,33 @@ export const useTransactionStore = create<TransactionStore>((set) => ({
             error: null,
           })
         },
+      })
+    }
+  },
+
+  retryTransactions: async () => {
+    const { filters, transactions } = get()
+    const requestId = ++latestListRequest
+    // Distinguish retry loading from the initial skeleton: keep existing rows
+    // visible and only flag `retrying` when there is data already on screen.
+    set({ retrying: transactions.length > 0, loading: transactions.length === 0, error: null })
+    try {
+      const result = await proxyPayAPI.getTransactions(filters)
+      if (requestId !== latestListRequest) return
+      set({
+        transactions: result.data,
+        total: result.total,
+        filters,
+        loading: false,
+        retrying: false,
+      })
+    } catch (error) {
+      if (requestId !== latestListRequest) return
+      // Preserve existing rows when a retry fails and rows are already present.
+      set({
+        error: error instanceof Error ? error.message : 'Failed to fetch transactions',
+        loading: false,
+        retrying: false,
       })
     }
   },
@@ -117,9 +156,20 @@ export const useTransactionStore = create<TransactionStore>((set) => ({
   },
 
   setFilters: (newFilters: Partial<TransactionFilters>) => {
-    set((state) => ({
-      filters: { ...state.filters, ...newFilters, offset: newFilters.offset ?? 0 },
-    }))
+    set((state) => {
+      const filterChanged = paginationResetKeys.some(
+        (key) => key in newFilters && newFilters[key] !== state.filters[key]
+      )
+
+      // Reset to the first page when a meaningful filter changes, unless the
+      // caller explicitly provides an offset (e.g. pagination navigation).
+      const offset =
+        newFilters.offset ?? (filterChanged ? 0 : state.filters.offset)
+
+      return {
+        filters: { ...state.filters, ...newFilters, offset },
+      }
+    })
   },
 
   resetFilters: () => {
