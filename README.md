@@ -58,11 +58,8 @@ this file or configuring an equivalent edge/CDN policy.
 
 ## Handsoff notes
 
-<!-- handsoff-issue-700 -->
-- #700: Render endpoints tagged in multiple groups
+<!-- handsoff-issue-704 -->
+- #704: Show operation-level server selection
 
-<!-- handsoff-issue-701 -->
-- #701: Populate tag descriptions in the sidebar
-
-<!-- handsoff-issue-702 -->
-- #702: Support composed schemas in generated examples
+<!-- handsoff-issue-705 -->
+- #705: Document authentication schemes beside affected operations

@@ -1,10 +1,111 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useHistory, useLocation } from '@docusaurus/router';
-import clsx from 'clsx';
-import styles from './TransactionSearch.module.css';
-import { useApiData } from '../context/ApiDataContext';
-import { Operation } from '../types/openapi';
-import { getOperationId, getOperationPath } from '../utils/operationUtils';
+import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { Search, X, Clock } from 'lucide-react'
+import { Transaction } from '../services/api'
+import '../styles/TransactionSearch.css'
+
+const SEARCH_HISTORY_KEY = 'proxypay_search_history'
+const MAX_HISTORY_ITEMS = 8
+
+// ── Utility: exported so TransactionsTable can use it ────────────────────────
+
+/**
+ * Returns true if the transaction matches the given search query.
+ * Matches against id, reference, and provider (case-insensitive).
+ */
+export function matchesSearch(tx: Transaction, query: string): boolean {
+  if (!query.trim()) return true
+  const q = query.toLowerCase().trim()
+  return (
+    tx.id.toLowerCase().includes(q) ||
+    tx.reference.toLowerCase().includes(q) ||
+    tx.provider.toLowerCase().includes(q)
+  )
+}
+
+/**
+ * Relevance tiers used to rank search results. Higher is more relevant.
+ * Exact matches on structured fields rank above prefix matches, which in
+ * turn rank above incidental substring matches.
+ */
+export const SEARCH_RANK = {
+  EXACT: 3,
+  PREFIX: 2,
+  SUBSTRING: 1,
+  NONE: 0,
+} as const
+
+/**
+ * Scores a single field against the query, returning the best relevance tier.
+ * Exact match > prefix match > substring match > no match.
+ */
+function scoreField(value: string, q: string): number {
+  const v = value.toLowerCase()
+  if (v === q) return SEARCH_RANK.EXACT
+  if (v.startsWith(q)) return SEARCH_RANK.PREFIX
+  if (v.includes(q)) return SEARCH_RANK.SUBSTRING
+  return SEARCH_RANK.NONE
+}
+
+/**
+ * Computes a relevance score for a transaction against the query.
+ * Structured fields (id, reference, provider) are ranked by their best tier.
+ * Returns 0 when the transaction does not match at all.
+ */
+export function searchRelevance(tx: Transaction, query: string): number {
+  if (!query.trim()) return SEARCH_RANK.NONE
+  const q = query.toLowerCase().trim()
+  return Math.max(
+    scoreField(tx.id, q),
+    scoreField(tx.reference, q),
+    scoreField(tx.provider, q)
+  )
+}
+
+/**
+ * Filters and ranks transactions by relevance to the query.
+ * Preserves the existing inclusion behavior of `matchesSearch` while
+ * ordering exact and prefix matches ahead of broad substring matches.
+ * Ties are broken deterministically by id.
+ */
+export function rankTransactions(
+  transactions: Transaction[],
+  query: string
+): Transaction[] {
+  if (!query.trim()) return transactions
+  return transactions
+    .filter((tx) => matchesSearch(tx, query))
+    .map((tx) => ({ tx, score: searchRelevance(tx, query) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      return a.tx.id.localeCompare(b.tx.id)
+    })
+    .map(({ tx }) => tx)
+}
+
+/**
+ * Wraps any portion of `text` that matches `query` in a <mark> element.
+ */
+export function HighlightMatch({
+  text,
+  query,
+}: {
+  text: string
+  query: string
+}): React.ReactElement {
+  if (!query.trim()) return <>{text}</>
+
+  const q = query.trim()
+  const idx = text.toLowerCase().indexOf(q.toLowerCase())
+  if (idx === -1) return <>{text}</>
+
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark className="search-highlight">{text.slice(idx, idx + q.length)}</mark>
+      {text.slice(idx + q.length)}
+    </>
+  )
+}
 
 interface TransactionSearchProps {
   onSelect?: (operation: Operation | null) => void;
