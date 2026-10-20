@@ -23,6 +23,66 @@ export function matchesSearch(tx: Transaction, query: string): boolean {
 }
 
 /**
+ * Relevance tiers used to rank search results. Higher is more relevant.
+ * Exact matches on structured fields rank above prefix matches, which in
+ * turn rank above incidental substring matches.
+ */
+export const SEARCH_RANK = {
+  EXACT: 3,
+  PREFIX: 2,
+  SUBSTRING: 1,
+  NONE: 0,
+} as const
+
+/**
+ * Scores a single field against the query, returning the best relevance tier.
+ * Exact match > prefix match > substring match > no match.
+ */
+function scoreField(value: string, q: string): number {
+  const v = value.toLowerCase()
+  if (v === q) return SEARCH_RANK.EXACT
+  if (v.startsWith(q)) return SEARCH_RANK.PREFIX
+  if (v.includes(q)) return SEARCH_RANK.SUBSTRING
+  return SEARCH_RANK.NONE
+}
+
+/**
+ * Computes a relevance score for a transaction against the query.
+ * Structured fields (id, reference, provider) are ranked by their best tier.
+ * Returns 0 when the transaction does not match at all.
+ */
+export function searchRelevance(tx: Transaction, query: string): number {
+  if (!query.trim()) return SEARCH_RANK.NONE
+  const q = query.toLowerCase().trim()
+  return Math.max(
+    scoreField(tx.id, q),
+    scoreField(tx.reference, q),
+    scoreField(tx.provider, q)
+  )
+}
+
+/**
+ * Filters and ranks transactions by relevance to the query.
+ * Preserves the existing inclusion behavior of `matchesSearch` while
+ * ordering exact and prefix matches ahead of broad substring matches.
+ * Ties are broken deterministically by id.
+ */
+export function rankTransactions(
+  transactions: Transaction[],
+  query: string
+): Transaction[] {
+  if (!query.trim()) return transactions
+  return transactions
+    .filter((tx) => matchesSearch(tx, query))
+    .map((tx) => ({ tx, score: searchRelevance(tx, query) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      return a.tx.id.localeCompare(b.tx.id)
+    })
+    .map(({ tx }) => tx)
+}
+
+/**
  * Wraps any portion of `text` that matches `query` in a <mark> element.
  */
 export function HighlightMatch({
@@ -47,35 +107,18 @@ export function HighlightMatch({
   )
 }
 
-// ── Search history helpers ────────────────────────────────────────────────────
-
-function loadHistory(): string[] {
-  try {
-    const raw = localStorage.getItem(SEARCH_HISTORY_KEY)
-    return raw ? (JSON.parse(raw) as string[]) : []
-  } catch {
-    return []
-  }
+interface TransactionSearchProps {
+  onSelect?: (operation: Operation | null) => void;
 }
 
-function saveHistory(history: string[]): void {
-  try {
-    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(history))
-  } catch {
-    // localStorage may be unavailable (e.g. private mode quota)
-  }
-}
+const SEARCH_PARAM = 'q';
+const OPERATION_PARAM = 'op';
+const DEPRECATED_PARAM = 'deprecated';
 
-function addToHistory(query: string, existing: string[]): string[] {
-  const q = query.trim()
-  if (!q) return existing
-  const deduped = [q, ...existing.filter((h) => h !== q)].slice(
-    0,
-    MAX_HISTORY_ITEMS
-  )
-  saveHistory(deduped)
-  return deduped
-}
+const TransactionSearch: React.FC<TransactionSearchProps> = ({ onSelect }) => {
+  const { operations } = useApiData();
+  const history = useHistory();
+  const location = useLocation();
 
 // ── Portal page route index ───────────────────────────────────────────────────
 
@@ -177,160 +220,159 @@ export function groupPortalPages(
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-interface TransactionSearchProps {
-  /** Called with the debounced query string whenever it changes */
-  onSearch: (query: string) => void
-  /** Number of results currently visible after filtering */
-  resultCount: number
-  /** Total unfiltered transaction count */
-  totalCount: number
-}
+  const [inputValue, setInputValue] = useState(searchQuery);
+  const [revealHidden, setRevealHidden] = useState(false);
+  const listRef = useRef<HTMLUListElement>(null);
 
-export const TransactionSearch: React.FC<TransactionSearchProps> = ({
-  onSearch,
-  resultCount,
-  totalCount,
-}) => {
-  const [inputValue, setInputValue] = useState('')
-  const [history, setHistory] = useState<string[]>(loadHistory)
-  const [showSuggestions, setShowSuggestions] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  // Debounce: fire onSearch 300 ms after the last keystroke
   useEffect(() => {
-    const timer = setTimeout(() => {
-      onSearch(inputValue)
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [inputValue, onSearch])
+    setInputValue(searchQuery);
+  }, [searchQuery]);
 
-  // Close suggestion list on outside click
-  useEffect(() => {
-    const handleOutsideClick = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setShowSuggestions(false)
+  const updateParams = useCallback(
+    (updates: Record<string, string | null>) => {
+      const next = new URLSearchParams(location.search);
+      Object.entries(updates).forEach(([key, value]) => {
+        if (value === null || value === '') {
+          next.delete(key);
+        } else {
+          next.set(key, value);
+        }
+      });
+      const query = next.toString();
+      history.replace({ ...location, search: query ? `?${query}` : '' });
+    },
+    [history, location]
+  );
+
+  const matchesFilters = useCallback(
+    (operation: Operation) => {
+      if (!showDeprecated && operation.deprecated) {
+        return false;
       }
+      if (!searchQuery) {
+        return true;
+      }
+      const haystack = [
+        getOperationId(operation),
+        getOperationPath(operation),
+        operation.summary,
+        operation.description,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(searchQuery.toLowerCase());
+    },
+    [searchQuery, showDeprecated]
+  );
+
+  const selectedOperation = useMemo(
+    () => operations.find((op) => getOperationId(op) === selectedOperationId) ?? null,
+    [operations, selectedOperationId]
+  );
+
+  const selectedIsHidden = selectedOperation !== null && !matchesFilters(selectedOperation);
+
+  const visibleOperations = useMemo(() => {
+    const filtered = operations.filter(matchesFilters);
+    if (selectedOperation && selectedIsHidden && revealHidden) {
+      return [selectedOperation, ...filtered];
     }
-    document.addEventListener('mousedown', handleOutsideClick)
-    return () => document.removeEventListener('mousedown', handleOutsideClick)
-  }, [])
+    return filtered;
+  }, [operations, matchesFilters, selectedOperation, selectedIsHidden, revealHidden]);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setInputValue(e.target.value)
-    setShowSuggestions(e.target.value === '' && history.length > 0)
-  }
-
-  const handleFocus = () => {
-    if (inputValue === '' && history.length > 0) {
-      setShowSuggestions(true)
+  useEffect(() => {
+    if (!selectedOperation || !listRef.current) {
+      return;
     }
-  }
+    const node = listRef.current.querySelector<HTMLElement>(
+      `[data-operation-id="${CSS.escape(getOperationId(selectedOperation))}"]`
+    );
+    node?.scrollIntoView({ block: 'nearest' });
+  }, [selectedOperation, visibleOperations]);
 
-  const handleClear = useCallback(() => {
-    setInputValue('')
-    onSearch('')
-    setShowSuggestions(false)
-    inputRef.current?.focus()
-  }, [onSearch])
+  const handleSelect = useCallback(
+    (operation: Operation) => {
+      const id = getOperationId(operation);
+      const isSame = id === selectedOperationId;
+      updateParams({ [OPERATION_PARAM]: isSame ? null : id });
+      onSelect?.(isSame ? null : operation);
+    },
+    [selectedOperationId, updateParams, onSelect]
+  );
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && inputValue.trim()) {
-      const updated = addToHistory(inputValue, history)
-      setHistory(updated)
-      setShowSuggestions(false)
-    }
-    if (e.key === 'Escape') {
-      setShowSuggestions(false)
-    }
-  }
+  const handleSearchChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const value = event.target.value;
+      setInputValue(value);
+      setRevealHidden(false);
+      updateParams({ [SEARCH_PARAM]: value || null });
+    },
+    [updateParams]
+  );
 
-  const applyHistoryItem = (term: string) => {
-    setInputValue(term)
-    onSearch(term)
-    setShowSuggestions(false)
-    inputRef.current?.focus()
-  }
+  const handleDeprecatedToggle = useCallback(() => {
+    setRevealHidden(false);
+    updateParams({ [DEPRECATED_PARAM]: showDeprecated ? null : 'true' });
+  }, [showDeprecated, updateParams]);
 
-  const removeHistoryItem = (
-    e: React.MouseEvent,
-    term: string
-  ) => {
-    e.stopPropagation()
-    const updated = history.filter((h) => h !== term)
-    setHistory(updated)
-    saveHistory(updated)
-  }
-
-  const isFiltered = inputValue.trim().length > 0
+  const handleRevealSelected = useCallback(() => {
+    setRevealHidden(true);
+  }, []);
 
   return (
-    <div className="transaction-search" ref={containerRef}>
-      <div className="search-input-wrapper">
-        <Search size={16} className="search-icon" aria-hidden="true" />
+    <div className={styles.container}>
+      <div className={styles.controls}>
         <input
-          ref={inputRef}
           type="search"
-          className="search-input"
-          placeholder="Search by ID, reference, provider…"
+          className={styles.searchInput}
+          placeholder="Search endpoints..."
           value={inputValue}
-          onChange={handleChange}
-          onFocus={handleFocus}
-          onKeyDown={handleKeyDown}
-          aria-label="Search transactions"
-          aria-autocomplete="list"
-          aria-expanded={showSuggestions}
-          autoComplete="off"
+          onChange={handleSearchChange}
+          aria-label="Search endpoints"
         />
-        {inputValue && (
-          <button
-            className="search-clear"
-            onClick={handleClear}
-            aria-label="Clear search"
-            type="button"
-          >
-            <X size={14} />
-          </button>
-        )}
+        <label className={styles.deprecatedToggle}>
+          <input type="checkbox" checked={showDeprecated} onChange={handleDeprecatedToggle} />
+          Show deprecated
+        </label>
       </div>
 
-      {/* Result count pill */}
-      {isFiltered && (
-        <span className="search-result-count" aria-live="polite" role="status">
-          {resultCount} of {totalCount} result{totalCount !== 1 ? 's' : ''}
-        </span>
+      {selectedIsHidden && !revealHidden && (
+        <div className={styles.hiddenNotice} role="status">
+          <span>
+            The selected endpoint <strong>{getOperationId(selectedOperation!)}</strong> is hidden by
+            the active filters.
+          </span>
+          <button type="button" className={styles.revealButton} onClick={handleRevealSelected}>
+            Reveal selected endpoint
+          </button>
+        </div>
       )}
 
-      {/* History suggestions */}
-      {showSuggestions && history.length > 0 && (
-        <ul className="search-suggestions" role="listbox" aria-label="Search history">
-          <li className="suggestions-heading">
-            <Clock size={12} aria-hidden="true" />
-            Recent searches
-          </li>
-          {history.map((term) => (
-            <li
-              key={term}
-              className="suggestion-item"
-              role="option"
-              aria-selected={false}
-              onClick={() => applyHistoryItem(term)}
-            >
-              <Clock size={12} className="suggestion-icon" aria-hidden="true" />
-              <span>{term}</span>
-              <button
-                className="suggestion-remove"
-                onClick={(e) => removeHistoryItem(e, term)}
-                aria-label={`Remove "${term}" from history`}
-                type="button"
-              >
-                <X size={12} />
-              </button>
-            </li>
-          ))}
+      {visibleOperations.length === 0 ? (
+        <p className={styles.emptyState}>No endpoints match the current filters.</p>
+      ) : (
+        <ul className={styles.list} ref={listRef}>
+          {visibleOperations.map((operation) => {
+            const id = getOperationId(operation);
+            const isSelected = id === selectedOperationId;
+            return (
+              <li key={id}>
+                <button
+                  type="button"
+                  data-operation-id={id}
+                  className={clsx(styles.item, isSelected && styles.itemSelected)}
+                  aria-current={isSelected ? 'true' : undefined}
+                  onClick={() => handleSelect(operation)}
+                >
+                  <span className={styles.method}>{operation.method.toUpperCase()}</span>
+                  <span className={styles.path}>{getOperationPath(operation)}</span>
+                  {operation.summary && <span className={styles.summary}>{operation.summary}</span>}
+                  {operation.deprecated && <span className={styles.deprecatedBadge}>Deprecated</span>}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
