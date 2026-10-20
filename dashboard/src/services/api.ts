@@ -1,5 +1,7 @@
-import axios, { AxiosInstance } from 'axios'
+import axios, { AxiosInstance, AxiosError } from 'axios'
 import { recordPerformanceMetric } from './performance'
+import { useInterceptorLogStore } from '../stores/interceptorLogStore'
+import { useApiConfigStore } from '../stores/apiConfigStore'
 
 export type TransactionStatus =
   | 'pending'
@@ -312,130 +314,159 @@ class ProxyPayAPI {
       },
     })
 
-    const token = localStorage.getItem('auth_token')
-    if (token) {
-      this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`
+type Primitive = string | number | boolean
+
+const encode = (value: Primitive): string => encodeURIComponent(String(value))
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const defaultStyle = (location: ParameterLocation): ParameterStyle =>
+  location === 'path' || location === 'header' ? 'simple' : 'form'
+
+const defaultExplode = (style: ParameterStyle): boolean => style === 'form'
+
+/**
+ * Serialize a single parameter value according to its OpenAPI style/explode
+ * metadata. Returns the encoded query-string fragment (without a leading `?`).
+ * For path/header/cookie locations the raw (unencoded) value is returned so
+ * callers can encode it in the appropriate context.
+ */
+export function serializeParameter(
+  name: string,
+  value: unknown,
+  options: ParameterSerializationOptions = {}
+): string {
+  const location = options.location ?? 'query'
+  const style = options.style ?? defaultStyle(location)
+  const explode = options.explode ?? defaultExplode(style)
+  const encodedName = encodeURIComponent(name)
+
+  if (value === undefined || value === null) return ''
+
+  if (Array.isArray(value)) {
+    const items = value.map((item) => encode(item as Primitive))
+    if (style === 'spaceDelimited') {
+      return `${encodedName}=${items.join('%20')}`
     }
-
-    const requestStartedAt = new WeakMap<object, number>()
-    const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
-    const recordResponseTime = (config?: object & { url?: string; method?: string }) => {
-      if (!config) return
-      const startedAt = requestStartedAt.get(config)
-      if (startedAt === undefined) return
-      requestStartedAt.delete(config)
-      recordPerformanceMetric('api-response', now() - startedAt, {
-        endpoint: config.url || 'unknown',
-        method: (config.method || 'get').toUpperCase(),
-      })
+    if (style === 'pipeDelimited') {
+      return `${encodedName}=${items.join('|')}`
     }
-
-    this.client.interceptors.request.use((config) => {
-      requestStartedAt.set(config, now())
-      return config
-    })
-    this.client.interceptors.response.use(
-      (response) => {
-        recordResponseTime(response.config)
-        return response
-      },
-      (error: unknown) => {
-        if (error && typeof error === 'object' && 'config' in error) {
-          recordResponseTime((error as { config?: object }).config)
-        }
-        return Promise.reject(error)
-      }
-    )
-  }
-
-  private unwrap<T>(payload: ApiPayload<T>): T {
-    if (payload && typeof payload === 'object' && 'data' in payload) {
-      return payload.data
+    if (style === 'simple') {
+      return items.join(',')
     }
-    return payload as T
+    // form (default for query/cookie)
+    if (explode) {
+      return items.map((item) => `${encodedName}=${item}`).join('&')
+    }
+    return `${encodedName}=${items.join(',')}`
   }
 
-  async getTransactions(filters: TransactionFilters): Promise<{
-    data: Transaction[]
-    total: number
-  }> {
-    const { data } = await this.client.get('/transactions', { params: filters })
-    return data
-  }
-
-  async getTransactionDetail(id: string): Promise<Transaction> {
-    const { data } = await this.client.get(`/transactions/${encodeURIComponent(id)}`)
-    return this.unwrap<Transaction>(data)
-  }
-
-  async getStatusHistory(id: string): Promise<StatusTransition[]> {
-    const { data } = await this.client.get(
-      `/transactions/${encodeURIComponent(id)}/status-history`
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value).filter(
+      ([, v]) => v !== undefined && v !== null
     )
-    return this.unwrap<StatusTransition[]>(data) || []
+    if (style === 'deepObject') {
+      return entries
+        .map(([k, v]) => `${encodedName}%5B${encodeURIComponent(k)}%5D=${encode(v as Primitive)}`)
+        .join('&')
+    }
+    if (style === 'simple') {
+      return entries.map(([k, v]) => `${encodeURIComponent(k)},${encode(v as Primitive)}`).join(',')
+    }
+    // form
+    if (explode) {
+      return entries
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encode(v as Primitive)}`)
+        .join('&')
+    }
+    const flat = entries
+      .map(([k, v]) => `${encodeURIComponent(k)},${encode(v as Primitive)}`)
+      .join(',')
+    return `${encodedName}=${flat}`
   }
 
-  async getDuplicateTransactions(
-    filters?: TransactionFilters
-  ): Promise<DuplicateTransactionGroup[]> {
-    const { data } = await this.client.get('/transactions/duplicates', {
-      params: filters,
+  return `${encodedName}=${encode(value as Primitive)}`
+}
+
+/**
+ * Serialize a set of parameters into a query string using each parameter's
+ * style/explode metadata. Returns a string without a leading `?`.
+ */
+export function serializeQueryParameters(
+  params: Record<string, unknown>,
+  metadata: Record<string, ParameterSerializationOptions> = {}
+): string {
+  const parts: string[] = []
+  for (const [name, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue
+    const fragment = serializeParameter(name, value, {
+      location: 'query',
+      ...metadata[name],
     })
-    return this.unwrap<DuplicateTransactionGroup[]>(data) || []
+    if (fragment) parts.push(fragment)
   }
+  return parts.join('&')
+}
 
-  getDuplicateCandidates(
-    filters?: TransactionFilters
-  ): Promise<DuplicateTransactionGroup[]> {
-    return this.getDuplicateTransactions(filters)
+/**
+ * Request body media-type editors (#715).
+ *
+ * Operations may declare one or more request body media types. The workbench
+ * picks a matching editor and constructs the appropriate `BodyInit`:
+ *  - `application/json` (and `+json`) → JSON editor → string body
+ *  - `multipart/form-data` → key/value editor → `FormData`
+ *  - `application/x-www-form-urlencoded` → key/value editor → `URLSearchParams`
+ *  - binary (`application/octet-stream`, `image/*`, etc.) → file editor → `Blob`
+ *  - `text/*` → plain text editor → string body
+ *
+ * Unsupported media types are surfaced explicitly so callers never silently
+ * send malformed data.
+ */
+export type BodyEditorKind = 'json' | 'form' | 'urlencoded' | 'binary' | 'text' | 'unsupported'
+
+export interface BodyEditorSelection {
+  kind: BodyEditorKind
+  /** The media type the editor was selected for */
+  mediaType: string
+  /** True when the media type is not supported by any editor */
+  unsupported: boolean
+  /** Human-readable reason when unsupported */
+  reason?: string
+}
+
+const isJsonMediaType = (mediaType: string): boolean => {
+  const base = mediaType.split(';')[0].trim().toLowerCase()
+  return base === 'application/json' || base.endsWith('+json')
+}
+
+const isBinaryMediaType = (mediaType: string): boolean => {
+  const base = mediaType.split(';')[0].trim().toLowerCase()
+  if (base === 'application/octet-stream') return true
+  if (base.startsWith('image/')) return true
+  if (base.startsWith('audio/')) return true
+  if (base.startsWith('video/')) return true
+  if (base === 'application/pdf') return true
+  if (base === 'application/zip') return true
+  return false
+}
+
+/**
+ * Choose the editor kind for a single declared media type.
+ */
+export function selectBodyEditor(mediaType: string): BodyEditorSelection {
+  const base = mediaType.split(';')[0].trim().toLowerCase()
+  if (isJsonMediaType(base)) {
+    return { kind: 'json', mediaType, unsupported: false }
   }
-
-  async markTransactionsAsDuplicates(
-    request: DuplicateMarkRequest
-  ): Promise<DuplicateTransactionGroup | DuplicateTransactionGroup[]> {
-    const { data } = await this.client.post('/transactions/duplicates/mark', request)
-    return this.unwrap<DuplicateTransactionGroup | DuplicateTransactionGroup[]>(data)
+  if (base === 'multipart/form-data') {
+    return { kind: 'form', mediaType, unsupported: false }
   }
-
-  markDuplicateTransactions(
-    request: DuplicateMarkRequest
-  ): Promise<DuplicateTransactionGroup | DuplicateTransactionGroup[]> {
-    return this.markTransactionsAsDuplicates(request)
+  if (base === 'application/x-www-form-urlencoded') {
+    return { kind: 'urlencoded', mediaType, unsupported: false }
   }
-
-  async mergeTransactions(
-    canonicalId: string,
-    duplicateIds: string[],
-    metadata?: Pick<MergeTransactionsRequest, 'actor' | 'reason'>
-  ): Promise<Transaction> {
-    const { data } = await this.client.post('/transactions/merge', {
-      canonicalId,
-      duplicateIds,
-      ...metadata,
-    })
-    return this.unwrap<Transaction>(data)
-  }
-
-  mergeDuplicateTransactions(
-    canonicalId: string,
-    duplicateIds: string[]
-  ): Promise<Transaction> {
-    return this.mergeTransactions(canonicalId, duplicateIds)
-  }
-
-  async getExportSchedules(): Promise<ExportSchedule[]> {
-    const { data } = await this.client.get('/transactions/exports/schedules')
-    return this.unwrap<ExportSchedule[]>(data) || []
-  }
-
-  async createExportSchedule(
-    schedule: CreateExportSchedule
-  ): Promise<ExportSchedule> {
-    const { data } = await this.client.post(
-      '/transactions/exports/schedules',
-      schedule
-    )
-    return this.unwrap<ExportSchedule>(data)
+  if (isBinaryMediaType(base)) {
+    return { kind: 'binary', mediaType, unsupported: false }
   }
 
   async updateExportSchedule(
