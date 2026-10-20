@@ -169,23 +169,43 @@ export interface DashboardNotification {
 }
 
 /**
- * OpenAPI parameter serialization styles (#713).
- * See https://swagger.io/docs/specification/serialization/
+ * Tracks the latest in-flight request per key so that stale (superseded)
+ * responses can be discarded instead of overwriting newer results (#720).
  */
-export type ParameterStyle =
-  | 'form'
-  | 'simple'
-  | 'spaceDelimited'
-  | 'pipeDelimited'
-  | 'deepObject'
+export class LatestRequestTracker {
+  private latest = new Map<string, number>()
+  private counter = 0
 
-export type ParameterLocation = 'query' | 'path' | 'header' | 'cookie'
+  /** Begin a new request for `key`; returns a token identifying this request. */
+  begin(key: string): number {
+    const token = ++this.counter
+    this.latest.set(key, token)
+    return token
+  }
 
-export interface ParameterSerializationOptions {
-  style?: ParameterStyle
-  explode?: boolean
-  location?: ParameterLocation
+  /** True when `token` is still the most recent request for `key`. */
+  isLatest(key: string, token: number): boolean {
+    return this.latest.get(key) === token
+  }
+
+  /** Forget the tracked request for `key` (e.g. on unmount). */
+  clear(key: string): void {
+    this.latest.delete(key)
+  }
 }
+
+class ProxyPayAPI {
+  private client: AxiosInstance
+  private authToken: string | null = null
+
+  constructor(baseURL = '/api') {
+    this.client = axios.create({
+      baseURL,
+      withCredentials: true,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })
 
 type Primitive = string | number | boolean
 
@@ -341,8 +361,16 @@ export function selectBodyEditor(mediaType: string): BodyEditorSelection {
   if (isBinaryMediaType(base)) {
     return { kind: 'binary', mediaType, unsupported: false }
   }
-  if (base.startsWith('text/')) {
-    return { kind: 'text', mediaType, unsupported: false }
+
+  async updateExportSchedule(
+    id: string,
+    schedule: Partial<CreateExportSchedule>
+  ): Promise<ExportSchedule> {
+    const { data } = await this.client.put(
+      `/transactions/exports/schedules/${encodeURIComponent(id)}`,
+      schedule
+    )
+    return this.unwrap<ExportSchedule>(data)
   }
   return {
     kind: 'unsupported',
@@ -352,111 +380,45 @@ export function selectBodyEditor(mediaType: string): BodyEditorSelection {
   }
 }
 
-/**
- * Pick the best editor from an operation's declared media types. JSON is
- * preferred when present, otherwise the first supported media type is used.
- * Returns `undefined` when no media types are declared.
- */
-export function selectBodyEditorForMediaTypes(
-  mediaTypes: string[] | undefined
-): BodyEditorSelection | undefined {
-  if (!mediaTypes || mediaTypes.length === 0) return undefined
-  const selections = mediaTypes.map(selectBodyEditor)
-  const json = selections.find((s) => s.kind === 'json')
-  if (json) return json
-  const supported = selections.find((s) => !s.unsupported)
-  if (supported) return supported
-  return selections[0]
-}
-
-export interface FormFieldEntry {
-  key: string
-  value: string
-  /** Optional file for multipart fields */
-  file?: File | Blob
-}
-
-/**
- * Construct the `BodyInit` for a given editor selection.
- *
- * Throws when the media type is unsupported so callers can surface the error
- * instead of sending malformed data.
- */
-export function buildBodyInit(
-  selection: BodyEditorSelection,
-  input: {
-    json?: string
-    text?: string
-    fields?: FormFieldEntry[]
-    file?: Blob | File | null
+  async getExportNotifications(): Promise<ExportCompletionNotification[]> {
+    const { data } = await this.client.get('/transactions/exports/notifications')
+    return this.unwrap<ExportCompletionNotification[]>(data) || []
   }
-): BodyInit {
-  switch (selection.kind) {
-    case 'json':
-      return input.json ?? ''
-    case 'text':
-      return input.text ?? ''
-    case 'form': {
-      const formData = new FormData()
-      for (const field of input.fields ?? []) {
-        if (!field.key) continue
-        if (field.file) {
-          formData.append(field.key, field.file)
-        } else {
-          formData.append(field.key, field.value)
-        }
-      }
-      return formData
-    }
-    case 'urlencoded': {
-      const params = new URLSearchParams()
-      for (const field of input.fields ?? []) {
-        if (!field.key) continue
-        params.append(field.key, field.value)
-      }
-      return params
-    }
-    case 'binary': {
-      if (!input.file) {
-        throw new Error(`A file is required for media type "${selection.mediaType}"`)
-      }
-      return input.file
-    }
-    case 'unsupported':
-    default:
-      throw new Error(
-        selection.reason ?? `Unsupported media type "${selection.mediaType}"`
-      )
+
+  async getNotificationConfig(): Promise<NotificationConfig> {
+    const { data } = await this.client.get('/transactions/exports/notifications/config')
+    return this.unwrap<NotificationConfig>(data)
+  }
+
+  async updateNotificationConfig(
+    config: NotificationConfig
+  ): Promise<NotificationConfig> {
+    const { data } = await this.client.put(
+      '/transactions/exports/notifications/config',
+      config
+    )
+    return this.unwrap<NotificationConfig>(data)
   }
 }
 
-/**
- * JSON Schema validation for request bodies (#714).
- *
- * Client-side validation is opt-in: callers pass the operation's declared
- * schema and receive actionable errors before sending. When a schema cannot
- * be resolved (undefined/null) validation is skipped and the server remains
- * authoritative.
- */
-export interface SchemaValidationError {
-  /** JSON Pointer to the offending value, e.g. `/user/email` */
-  path: string
-  /** Human-readable, actionable message */
-  message: string
+  async getScheduledExports(): Promise<ScheduledExport[]> {
+    const { data } = await this.client.get('/transactions/exports/scheduled')
+    return this.unwrap<ScheduledExport[]>(data) || []
+  }
+
+  async getDashboardNotifications(): Promise<DashboardNotification[]> {
+    const { data } = await this.client.get('/notifications')
+    return this.unwrap<DashboardNotification[]>(data) || []
+  }
+
+  async markNotificationRead(id: string): Promise<void> {
+    await this.client.post(`/notifications/${encodeURIComponent(id)}/read`)
+  }
 }
 
-export interface SchemaValidationResult {
-  valid: boolean
-  errors: SchemaValidationError[]
-  /** True when no schema was supplied and validation was skipped */
-  skipped: boolean
+export interface ApiPayload<T> {
+  data: T
 }
 
-type JSONSchema = Record<string, unknown>
-
-const typeOf = (value: unknown): string => {
-  if (value === null) return 'null'
-  if (Array.isArray(value)) return 'array'
-  if (typeof value === 'object') return 'object'
-  return typeof value
-}
+export const api = new ProxyPayAPI()
+export default api

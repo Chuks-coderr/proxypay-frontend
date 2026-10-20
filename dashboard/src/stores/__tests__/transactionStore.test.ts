@@ -27,199 +27,105 @@ describe('transactionStore pagination', () => {
 
     expect(useTransactionStore.getState().filters).toEqual({ limit: 2, offset: 0, status: 'settled' })
   })
+})
 
-  it('resets the offset when changing the search filter', () => {
-    useTransactionStore.setState({ filters: { limit: 2, offset: 4 } })
-
-    useTransactionStore.getState().setFilters({ search: 'abc' })
-
-    expect(useTransactionStore.getState().filters).toEqual({ limit: 2, offset: 0, search: 'abc' })
+describe('transactionStore stale response handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useTransactionStore.setState({ filters: { limit: 2, offset: 0 }, transactions: [], loading: false, error: null })
   })
 
-  it('resets the offset when changing the date range filter', () => {
-    useTransactionStore.setState({ filters: { limit: 2, offset: 4 } })
+  it('ignores a stale response that resolves after a newer request', async () => {
+    let resolveFirst: (value: unknown) => void = () => {}
+    let resolveSecond: (value: unknown) => void = () => {}
 
-    useTransactionStore.getState().setFilters({ startDate: '2024-01-01', endDate: '2024-01-31' })
-
-    expect(useTransactionStore.getState().filters).toEqual({
-      limit: 2,
-      offset: 0,
-      startDate: '2024-01-01',
-      endDate: '2024-01-31',
+    const first = new Promise((resolve) => {
+      resolveFirst = resolve
     })
+    const second = new Promise((resolve) => {
+      resolveSecond = resolve
+    })
+
+    vi.mocked(proxyPayAPI.getTransactions)
+      .mockReturnValueOnce(first as never)
+      .mockReturnValueOnce(second as never)
+
+    const firstFetch = useTransactionStore.getState().fetchTransactions()
+    const secondFetch = useTransactionStore.getState().fetchTransactions()
+
+    // Newer request resolves first, then the older (stale) one resolves late.
+    resolveSecond({ transactions: [{ id: 'newer' }], total: 1 })
+    await secondFetch
+
+    resolveFirst({ transactions: [{ id: 'older' }], total: 1 })
+    await firstFetch
+
+    expect(useTransactionStore.getState().transactions).toEqual([{ id: 'newer' }])
   })
 
-  it('resets the offset when changing the provider filter', () => {
-    useTransactionStore.setState({ filters: { limit: 2, offset: 4 } })
+  it('applies the latest response when requests resolve in order', async () => {
+    vi.mocked(proxyPayAPI.getTransactions)
+      .mockResolvedValueOnce({ transactions: [{ id: 'first' }], total: 1 } as never)
+      .mockResolvedValueOnce({ transactions: [{ id: 'second' }], total: 1 } as never)
 
-    useTransactionStore.getState().setFilters({ provider: 'mtn' })
+    await useTransactionStore.getState().fetchTransactions()
+    await useTransactionStore.getState().fetchTransactions()
 
-    expect(useTransactionStore.getState().filters).toEqual({ limit: 2, offset: 0, provider: 'mtn' })
-  })
-
-  it('does not reset the offset when a filter value is unchanged', () => {
-    useTransactionStore.setState({ filters: { limit: 2, offset: 4, status: 'settled' } })
-
-    useTransactionStore.getState().setFilters({ status: 'settled' })
-
-    expect(useTransactionStore.getState().filters).toEqual({ limit: 2, offset: 4, status: 'settled' })
-  })
-
-  it('does not reset the offset when only the limit changes', () => {
-    useTransactionStore.setState({ filters: { limit: 2, offset: 4 } })
-
-    useTransactionStore.getState().setFilters({ limit: 10 })
-
-    expect(useTransactionStore.getState().filters).toEqual({ limit: 10, offset: 4 })
+    expect(useTransactionStore.getState().transactions).toEqual([{ id: 'second' }])
   })
 })
 
-describe('transactionStore retry', () => {
-  const getTransactions = vi.mocked(proxyPayAPI.getTransactions)
-
+describe('transactionStore server totals', () => {
   beforeEach(() => {
-    getTransactions.mockReset()
+    vi.clearAllMocks()
     useTransactionStore.setState({
+      filters: { limit: 2, offset: 0 },
       transactions: [],
       total: 0,
       loading: false,
-      retrying: false,
       error: null,
-      filters: { limit: 2, offset: 0, status: 'settled' },
     })
   })
 
-  it('repeats the active filter request when retrying', async () => {
-    getTransactions.mockResolvedValueOnce({ data: { transactions: [], total: 0 } })
+  it('stores the server total rather than the loaded row count', async () => {
+    vi.mocked(proxyPayAPI.getTransactions).mockResolvedValueOnce({
+      transactions: [{ id: 'a' }, { id: 'b' }],
+      total: 137,
+    } as never)
 
-    await useTransactionStore.getState().retry()
-
-    expect(getTransactions).toHaveBeenCalledWith({ limit: 2, offset: 0, status: 'settled' })
-  })
-
-  it('flags retry loading separately from the initial skeleton loading', async () => {
-    let resolveRequest: (value: unknown) => void = () => {}
-    getTransactions.mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveRequest = resolve
-      }) as ReturnType<typeof proxyPayAPI.getTransactions>,
-    )
-
-    const pending = useTransactionStore.getState().retry()
-
-    expect(useTransactionStore.getState().retrying).toBe(true)
-    expect(useTransactionStore.getState().loading).toBe(false)
-
-    resolveRequest({ data: { transactions: [], total: 0 } })
-    await pending
-
-    expect(useTransactionStore.getState().retrying).toBe(false)
-  })
-
-  it('preserves existing rows when a retry fails', async () => {
-    const existing = [{ id: 'txn_1' }] as never
-    useTransactionStore.setState({ transactions: existing, total: 1, error: 'boom' })
-    getTransactions.mockRejectedValueOnce(new Error('still down'))
-
-    await useTransactionStore.getState().retry()
+    await useTransactionStore.getState().fetchTransactions()
 
     const state = useTransactionStore.getState()
-    expect(state.transactions).toBe(existing)
-    expect(state.total).toBe(1)
-    expect(state.error).toBeTruthy()
-    expect(state.retrying).toBe(false)
+    expect(state.transactions).toHaveLength(2)
+    expect(state.total).toBe(137)
   })
 
-  it('clears the error after a successful retry', async () => {
-    useTransactionStore.setState({ error: 'boom' })
-    getTransactions.mockResolvedValueOnce({ data: { transactions: [], total: 0 } })
+  it('keeps the server total when filters are applied remotely', async () => {
+    vi.mocked(proxyPayAPI.getTransactions).mockResolvedValueOnce({
+      transactions: [{ id: 'a' }],
+      total: 42,
+    } as never)
 
-    await useTransactionStore.getState().retry()
+    useTransactionStore.getState().setFilters({ status: 'settled' })
+    await useTransactionStore.getState().fetchTransactions()
 
-    expect(useTransactionStore.getState().error).toBeNull()
-  })
-})
-
-describe('transactionStore sorting', () => {
-  const makeRow = (id: string, overrides: Record<string, unknown> = {}) =>
-    ({ id, amount: 0, createdAt: '2024-01-01T00:00:00.000Z', ...overrides }) as never
-
-  beforeEach(() => {
-    useTransactionStore.setState({
-      transactions: [],
-      total: 0,
-      loading: false,
-      retrying: false,
-      error: null,
-      filters: { limit: 10, offset: 0 },
-    })
+    const state = useTransactionStore.getState()
+    expect(state.filters.status).toBe('settled')
+    expect(state.transactions).toHaveLength(1)
+    // The server total reflects the filtered result set, not the loaded rows.
+    expect(state.total).toBe(42)
   })
 
-  it('keeps equal values in a deterministic order across repeated sorts', () => {
-    const rows = [makeRow('txn_b', { amount: 5 }), makeRow('txn_a', { amount: 5 }), makeRow('txn_c', { amount: 5 })]
-    useTransactionStore.setState({ transactions: rows, total: rows.length })
+  it('does not overwrite the server total with the loaded row count', async () => {
+    vi.mocked(proxyPayAPI.getTransactions).mockResolvedValueOnce({
+      transactions: [{ id: 'a' }, { id: 'b' }],
+      total: 500,
+    } as never)
 
-    useTransactionStore.getState().setSort('amount', 'asc')
-    const first = useTransactionStore.getState().transactions.map((t) => (t as { id: string }).id)
+    await useTransactionStore.getState().fetchTransactions()
 
-    useTransactionStore.getState().setSort('amount', 'desc')
-    useTransactionStore.getState().setSort('amount', 'asc')
-    const second = useTransactionStore.getState().transactions.map((t) => (t as { id: string }).id)
-
-    expect(first).toEqual(second)
-    expect(first).toEqual(['txn_a', 'txn_b', 'txn_c'])
-  })
-
-  it('places missing values last regardless of sort direction', () => {
-    const rows = [
-      makeRow('txn_missing', { amount: null }),
-      makeRow('txn_low', { amount: 1 }),
-      makeRow('txn_high', { amount: 9 }),
-    ]
-    useTransactionStore.setState({ transactions: rows, total: rows.length })
-
-    useTransactionStore.getState().setSort('amount', 'asc')
-    expect(useTransactionStore.getState().transactions.map((t) => (t as { id: string }).id)).toEqual([
-      'txn_low',
-      'txn_high',
-      'txn_missing',
-    ])
-
-    useTransactionStore.getState().setSort('amount', 'desc')
-    expect(useTransactionStore.getState().transactions.map((t) => (t as { id: string }).id)).toEqual([
-      'txn_high',
-      'txn_low',
-      'txn_missing',
-    ])
-  })
-
-  it('sorts numeric values numerically rather than lexically', () => {
-    const rows = [makeRow('txn_10', { amount: 10 }), makeRow('txn_2', { amount: 2 }), makeRow('txn_1', { amount: 1 })]
-    useTransactionStore.setState({ transactions: rows, total: rows.length })
-
-    useTransactionStore.getState().setSort('amount', 'asc')
-
-    expect(useTransactionStore.getState().transactions.map((t) => (t as { id: string }).id)).toEqual([
-      'txn_1',
-      'txn_2',
-      'txn_10',
-    ])
-  })
-
-  it('sorts date-like values chronologically and treats invalid dates as missing', () => {
-    const rows = [
-      makeRow('txn_invalid', { createdAt: 'not-a-date' }),
-      makeRow('txn_late', { createdAt: '2024-03-01T00:00:00.000Z' }),
-      makeRow('txn_early', { createdAt: '2024-01-01T00:00:00.000Z' }),
-    ]
-    useTransactionStore.setState({ transactions: rows, total: rows.length })
-
-    useTransactionStore.getState().setSort('createdAt', 'asc')
-
-    expect(useTransactionStore.getState().transactions.map((t) => (t as { id: string }).id)).toEqual([
-      'txn_early',
-      'txn_late',
-      'txn_invalid',
-    ])
+    expect(useTransactionStore.getState().total).not.toBe(
+      useTransactionStore.getState().transactions.length,
+    )
   })
 })

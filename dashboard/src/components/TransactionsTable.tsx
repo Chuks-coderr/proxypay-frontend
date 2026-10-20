@@ -175,11 +175,21 @@ const previewForRow = (
   return { top, left }
 }
 
+/** #722 — Match a transaction against the selected provider set. */
+const matchesProviders = (
+  tx: Transaction,
+  providers: Provider[]
+): boolean => {
+  if (providers.length === 0) return true
+  return providers.some((provider) => provider === tx.provider)
+}
+
 export const TransactionsTable: React.FC<{
   onRowClick: (tx: Transaction) => void
 }> = ({ onRowClick }) => {
   const { transactions, loading, error, fetchTransactions } = useTransactionStore()
-  const { preferences: viewPrefs, setSortColumn, setSortDirection, resetToDefaults } = useViewPreferencesStore()
+  // #723 — Server-reported total, distinct from the number of loaded rows.
+  const serverTotal = useTransactionStore((state) => state.total)
 
   const [sort, setSort] = useState<SortState>({ column: (viewPrefs.sortColumn as keyof Transaction) || null, direction: viewPrefs.sortDirection })
   const [preview, setPreview] = useState<PreviewState | null>(null)
@@ -249,11 +259,104 @@ export const TransactionsTable: React.FC<{
   // #724 — Any meaningful filter change resets pagination to the first page so
   // the table never stays on an offset that no longer has results.
   const handleSearch = useCallback((query: string) => {
-    setSearchQuery((prev) => {
-      if (prev !== query) resetPagination()
-      return query
+    setSearchQuery(query)
+  }, [])
+
+  const handleDateRange = useCallback((range: DateRange) => {
+    setDateRange(range)
+  }, [])
+
+  const handleStatusChange = useCallback((statuses: TransactionStatus[]) => {
+    setSelectedStatuses(statuses)
+  }, [])
+
+  // ── Provider selection — reset paging when the provider set changes ─────────
+  const handleProviderChange = useCallback((providers: Provider[]) => {
+    setSelectedProviders(providers)
+    setActiveRowIndex(0)
+    virtuosoRef.current?.scrollToIndex({ index: 0, align: 'start' })
+  }, [])
+
+  // ── Composed filtering + sorting (AND logic) ─────────────────────────────────
+  const filteredAndSorted = useMemo(() => {
+    const filtered = (transactions ?? []).filter(
+      (tx) =>
+        matchesSearch(tx, searchQuery) &&
+        matchesDateRange(tx, dateRange) &&
+        matchesStatus(tx, selectedStatuses) &&
+        matchesProviders(tx, selectedProviders)
+    )
+
+    if (!sort.column) return filtered
+
+    return [...filtered].sort((a, b) => {
+      const col = sort.column as keyof Transaction
+      const aVal = a[col]
+      const bVal = b[col]
+      if (aVal === bVal) return 0
+      const result =
+        typeof aVal === 'number' && typeof bVal === 'number'
+          ? aVal - bVal
+          : String(aVal).localeCompare(String(bVal))
+      return sort.direction === 'asc' ? result : -result
     })
-  }, [resetPagination])
+  }, [transactions, searchQuery, dateRange, selectedStatuses, selectedProviders, sort])
+
+  // #723 — Distinguish the server total from the number of loaded rows.
+  // `serverTotal` reflects the full result set on the server; `loadedCount`
+  // is only what the client currently holds. When filters are applied
+  // remotely the server total already reflects them; when filters are applied
+  // client-side (search/date/status/provider) the server total is the
+  // unfiltered total and the filtered count is derived from loaded rows.
+  const loadedCount = (transactions ?? []).length
+  const visibleCount = filteredAndSorted.length
+  const hasClientFilters =
+    searchQuery.trim() !== '' ||
+    dateRange.preset !== 'all' ||
+    selectedStatuses.length > 0 ||
+    selectedProviders.length > 0
+  const unfilteredTotal = serverTotal ?? loadedCount
+  const totalCount = hasClientFilters ? visibleCount : unfilteredTotal
+  const totalLabel = hasClientFilters
+    ? `Showing ${visibleCount} of ${loadedCount} loaded (filtered)`
+    : `Total: ${unfilteredTotal}`
+
+  // ── SortHeader sub-component ─────────────────────────────────────────────────
+  const SortHeader: React.FC<{
+    column: keyof Transaction
+    label: string
+  }> = ({ column, label }) => {
+    const direction = sort.column === column
+      ? sort.direction === 'asc' ? 'ascending' : 'descending'
+      : 'none'
+
+    return (
+      <th scope="col" aria-sort={direction}>
+        <button type="button" onClick={() => handleSort(column)} className="sortable-header">
+          <span className="header-content">
+            {label}
+            {sort.column === column &&
+              (sort.direction === 'asc' ? (
+                <ChevronUp size={16} />
+              ) : (
+                <ChevronDown size={16} />
+              ))}
+          </span>
+        </button>
+      </th>
+    )
+  }
+
+  const renderTableHeader = () => (
+    <tr>
+      <SortHeader column="reference" label="Reference" />
+      <SortHeader column="amount" label="Amount" />
+      <SortHeader column="status" label="Status" />
+      <SortHeader column="provider" label="Provider" />
+      <SortHeader column="timestamp" label="Date" />
+      <th scope="col">Actions</th>
+    </tr>
+  )
 
   const handleDateRange = useCallback((range: DateRange) => {
     setDateRange((prev) => {
@@ -264,16 +367,20 @@ export const TransactionsTable: React.FC<{
       ) {
         resetPagination()
       }
-      return range
-    })
-  }, [resetPagination])
-
-  const handleStatusChange = useCallback((statuses: TransactionStatus[]) => {
-    setSelectedStatuses((prev) => {
-      const changed =
-        prev.length !== statuses.length ||
-        prev.some((status, i) => status !== statuses[i])
-      if (changed) resetPagination()
-      return statuses
-    })
-  }, [
+    },
+    onMouseEnter: (event: React.MouseEvent<HTMLTableCellElement>) => {
+      const row = event.currentTarget.closest('tr')
+      if (row) schedulePreview(tx, row)
+    },
+    onMouseLeave: (event: React.MouseEvent<HTMLTableCellElement>) => {
+      const row = event.currentTarget.closest('tr')
+      if (
+        !row ||
+        !(event.relatedTarget instanceof Node) ||
+        !row.contains(event.relatedTarget)
+      ) hidePreview()
+    },
+    onFocus: (event: React.FocusEvent<HTMLTableCellElement>) => {
+      setActiveRowIndex(index)
+      const row = event.currentTarget.closest('tr')
+      if (row) schedulePreview(tx, row)

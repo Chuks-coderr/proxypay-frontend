@@ -19,40 +19,29 @@ import './App.css'
 
 type Page = 'transactions' | 'reconciliation' | 'settings'
 
-interface PortalRoute {
-  id: string
-  label: string
-  category: string
-  page: Page
-  keywords: string[]
+const VALID_PAGES: Page[] = ['transactions', 'reconciliation', 'settings']
+
+function readPageFromUrl(): Page {
+  if (typeof window === 'undefined') return 'transactions'
+  const page = new URLSearchParams(window.location.search).get('page')
+  return page && (VALID_PAGES as string[]).includes(page) ? (page as Page) : 'transactions'
 }
 
-const PORTAL_ROUTES: PortalRoute[] = [
-  {
-    id: 'transactions',
-    label: 'Transaction History',
-    category: 'Dashboards',
-    page: 'transactions',
-    keywords: ['transactions', 'history', 'payments', 'ledger'],
-  },
-  {
-    id: 'reconciliation',
-    label: 'Reconciliation',
-    category: 'Dashboards',
-    page: 'reconciliation',
-    keywords: ['reconciliation', 'matching', 'duplicates', 'review'],
-  },
-  {
-    id: 'settings',
-    label: 'Notification Settings',
-    category: 'Settings',
-    page: 'settings',
-    keywords: ['settings', 'notifications', 'alerts', 'preferences'],
-  },
-]
+function writePageToUrl(page: Page) {
+  if (typeof window === 'undefined') return
+  const params = new URLSearchParams(window.location.search)
+  if (page === 'transactions') {
+    params.delete('page')
+  } else {
+    params.set('page', page)
+  }
+  const query = params.toString()
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`
+  window.history.replaceState(null, '', nextUrl)
+}
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('transactions')
+  const [currentPage, setCurrentPage] = useState<Page>(readPageFromUrl)
   const {
     selectedTransaction,
     setSelectedTransaction,
@@ -184,12 +173,10 @@ export default function App() {
     fetchTransactions(filters)
   }, [])
 
-  // Issue #717: abort any in-flight request on unmount
+  // Keep the selected tab in the URL so it can be bookmarked/shared
   useEffect(() => {
-    return () => {
-      cancelDetailRequest()
-    }
-  }, [])
+    writePageToUrl(currentPage)
+  }, [currentPage])
 
   const handleRowClick = (tx: Transaction) => {
     // Cancel any previous in-flight request before starting a new one
